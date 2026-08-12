@@ -50,6 +50,12 @@ The package does not contain `opencode.json`, `opencode.jsonc`, or
 older installation of the learning plugin, its two agents, and its eight
 commands.
 
+## Clone the repository
+
+```sh
+git clone https://github.com/mdc-git/opencode-learning.git
+```
+
 ## Copy the files
 
 Run this from the directory that contains `opencode-learning`:
