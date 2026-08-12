@@ -1,171 +1,150 @@
 # OpenCode procedural learning
 
 This OpenCode V2 plugin extracts reusable procedures from completed sessions
-and stores them as native OpenCode skills. Install it globally for every
-project or locally for one project. Learning state remains separate for each
-project in either case. A project skill is copied into the global skill registry
-only when you run `/learn-promote <skill-id>` and approve the permission request.
+and stores them as native OpenCode skills.
 
-## Package contents
+Install it globally to use it in every project, or install it under one
+project's `.opencode` directory. Runtime state and learned skills remain local
+to each project in both cases.
+
+## Why use it
+
+OpenCode sessions often uncover procedures that are useful again: a package
+manager quirk, a reliable debugging sequence, a project-specific deployment
+step, or a verification command that caught a bad change. This plugin turns
+that completed work into reviewable OpenCode skills instead of leaving it only
+in the session history.
+
+It is designed for procedural knowledge, not session summaries. A proposal must
+identify reusable steps, cite evidence from the completed work, pass
+deterministic checks, and optionally pass a second agent review. The default
+mode stages the result without changing the skill registry.
+
+## Example workflows
+
+### Preserve a package-manager workaround
+
+A session discovers that installing an npm dist-tag resolves the correct
+package but rewrites the requested manifest value. The agent restores the
+literal tag and verifies the installed package. After the turn, the plugin can
+stage a skill containing the exact edit and verification sequence:
 
 ```text
-opencode-learning/
+session finds and fixes npm manifest normalization
+  -> reflector extracts the reusable procedure
+  -> validator checks it against recorded tool evidence
+  -> /learn-show displays the proposed skill
+  -> /learn-approve publishes it to .opencode/skills/
+```
+
+### Capture a project deployment sequence
+
+A deployment only succeeds after files are copied in a particular order, a
+service is restarted, and an API health check is run. The plugin can propose a
+project skill that records those steps and the failure conditions observed in
+the session. Future agents can activate that skill before deploying the same
+project.
+
+### Improve an existing learned skill
+
+If a later session finds a safer or shorter procedure, the reflector can
+propose a section-level patch instead of creating a duplicate skill. The patch
+includes the current SHA-256, so approval fails if the skill changed after the
+proposal was created.
+
+Use `/learn` when a short session contains valuable knowledge but does not meet
+the automatic score threshold. Use `/learn-pending` to review all staged
+changes before accepting or rejecting them.
+
+## Requirements
+
+- OpenCode V2
+- Node.js and npm on `PATH`
+- `@opencode-ai/plugin@next` installed under the selected OpenCode config root
+
+## Install
+
+Clone the repository and enter it:
+
+```sh
+git clone https://github.com/mdc-git/opencode-learning.git
+cd opencode-learning
+```
+
+Choose one installation scope before continuing.
+
+### Global
+
+Use this option to load the plugin, agents, and commands in every OpenCode
+project for the current user:
+
+```sh
+TARGET="$HOME/.config/opencode"
+```
+
+### Project-local
+
+Use this option to load the plugin, agents, and commands only in one project.
+Replace `/path/to/project` with that project's root directory:
+
+```sh
+TARGET="/path/to/project/.opencode"
+```
+
+The remaining installation steps are identical for both scopes and use the
+selected `TARGET` value.
+
+Back up an existing target before replacing files with the same names:
+
+```sh
+if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
+```
+
+Install the plugin, agents, commands, and dependency:
+
+```sh
+mkdir -p "$TARGET/agents" "$TARGET/commands" "$TARGET/plugins/opencode-learning"
+cp agents/*.md "$TARGET/agents/"
+cp commands/*.md "$TARGET/commands/"
+cp plugins/opencode-learning/index.ts "$TARGET/plugins/opencode-learning/"
+cd "$TARGET"
+npm install @opencode-ai/plugin@next
+```
+
+The resulting layout is:
+
+```text
+<target>/
 |-- agents/
 |   |-- learning-reflector.md
 |   `-- learning-validator.md
 |-- commands/
-|   |-- learn.md
-|   |-- learn-approve.md
-|   |-- learn-curate.md
-|   |-- learn-pending.md
-|   |-- learn-promote.md
-|   |-- learn-reject.md
-|   |-- learn-show.md
-|   `-- learn-status.md
+|   `-- learn*.md
 |-- plugins/
 |   `-- opencode-learning/
 |       `-- index.ts
-|-- opencode.jsonc.example
-`-- README.md
+`-- node_modules/
 ```
 
-`plugins/opencode-learning/index.ts` is self-contained apart from its import of
-`@opencode-ai/plugin`. The agents and commands stay as separate Markdown files
-because OpenCode discovers them natively.
+## Configure
 
-## Before copying
-
-Back up the config directory for the chosen install scope if it contains files
-with the same names:
-
-```sh
-# Global install
-cp -a ~/.config/opencode ~/.config/opencode.backup
-
-# Project-local install
-cp -a <project>/.opencode <project>/.opencode.backup
-```
-
-The package does not contain `opencode.json`, `opencode.jsonc`, or
-`package.json`, so copying it does not replace those files. It does replace an
-older installation of the learning plugin, its two agents, and its eight
-commands.
-
-## Clone the repository
-
-```sh
-git clone https://github.com/mdc-git/opencode-learning.git
-```
-
-## Global install
-
-Run this from the directory that contains `opencode-learning`:
-
-```sh
-mkdir -p ~/.config/opencode/agents ~/.config/opencode/commands ~/.config/opencode/plugins/opencode-learning
-cp ./opencode-learning/agents/*.md ~/.config/opencode/agents/
-cp ./opencode-learning/commands/*.md ~/.config/opencode/commands/
-cp ./opencode-learning/plugins/opencode-learning/index.ts ~/.config/opencode/plugins/opencode-learning/
-cd ~/.config/opencode
-npm install @opencode-ai/plugin@next
-```
-
-After copying, the installed files should include:
-
-```text
-~/.config/opencode/agents/learning-reflector.md
-~/.config/opencode/agents/learning-validator.md
-~/.config/opencode/commands/learn.md
-~/.config/opencode/commands/learn-approve.md
-~/.config/opencode/commands/learn-curate.md
-~/.config/opencode/commands/learn-pending.md
-~/.config/opencode/commands/learn-promote.md
-~/.config/opencode/commands/learn-reject.md
-~/.config/opencode/commands/learn-show.md
-~/.config/opencode/commands/learn-status.md
-~/.config/opencode/plugins/opencode-learning/index.ts
-```
-
-Use `~/.config/opencode/opencode.json` or `opencode.jsonc` for the configuration
-described below.
-
-## Project-local install
-
-Run this from the directory that contains `opencode-learning`, replacing
-`<project>` with the target project directory:
-
-```sh
-mkdir -p <project>/.opencode/agents <project>/.opencode/commands <project>/.opencode/plugins/opencode-learning
-cp ./opencode-learning/agents/*.md <project>/.opencode/agents/
-cp ./opencode-learning/commands/*.md <project>/.opencode/commands/
-cp ./opencode-learning/plugins/opencode-learning/index.ts <project>/.opencode/plugins/opencode-learning/
-cd <project>/.opencode
-npm install @opencode-ai/plugin@next
-```
-
-Use `<project>/.opencode/opencode.json` or
-`<project>/.opencode/opencode.jsonc` for the configuration described below.
-The plugin, agents, and commands will only be available in that project.
-
-## Update the OpenCode config
-
-Open the global or project-local configuration file for the chosen install
-scope and make two changes.
-
-Add these permission rules to the existing `permissions` array:
-
-```jsonc
-{ "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
-{ "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
-{ "action": "learning_promote", "resource": "*", "effect": "ask" }
-```
-
-The two deny rules prevent ordinary agents from calling the internal callback
-tools. The hidden reflector and validator agents contain narrower rules that
-allow only their matching callback. The promotion rule requires confirmation
-before a project skill is published globally.
-
-Add the plugin path to the existing plugin array. For a config that already
-loads `js-repl.ts`, it can look like this:
+Merge the following into `<target>/opencode.json` or
+`<target>/opencode.jsonc`. Keep unrelated settings.
 
 ```jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
+    { "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
+    { "action": "learning_promote", "resource": "*", "effect": "ask" }
+  ],
   "plugins": [
-    "./plugins/opencode-learning/index.ts"
-  ]
-}
-```
-
-Keep all unrelated config entries. `opencode.jsonc.example` contains a
-complete fragment with the permissions and plugin entry, but it is an example
-to merge, not a replacement for the existing config.
-
-## Configure the plugin
-
-The string entry uses all bundled defaults:
-
-```jsonc
-{
-  "plugins": [
-    "./plugins/opencode-learning/index.ts"
-  ]
-}
-```
-
-Use an object entry to pass options:
-
-```jsonc
-{
-  "plugins": [
-    "./plugins/js-repl.ts",
     {
       "package": "./plugins/opencode-learning/index.ts",
       "options": {
         "mode": "suggest",
         "scoreThreshold": 10,
-        "reviewerTimeoutMs": 120000,
-        "maxEventsPerSession": 120,
-        "maxCandidates": 5,
         "confidenceThreshold": 0.72,
         "agentValidation": true,
         "notify": true,
@@ -180,102 +159,56 @@ Use an object entry to pass options:
           "archiveAfterDays": 90
         }
       }
-    },
-    "opencode-chatgpt-websearch"
+    }
   ]
 }
 ```
 
-The plugin accepts these options:
+The two deny rules reserve the structured callback tools for the hidden
+reflector and validator agents. Global promotion requires confirmation.
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `mode` | `suggest` | `off` disables learning, `suggest` stages proposals for approval, and `auto` applies validated project changes immediately. |
-| `scoreThreshold` | `10` | Minimum deterministic experience score for an automatic review. `/learn` bypasses this threshold. |
-| `reviewerTimeoutMs` | `120000` | Maximum time allowed for each internal reflector or validator session. |
-| `maxEventsPerSession` | `120` | Maximum number of tool events retained for one foreground session. |
-| `maxCandidates` | `5` | Maximum number of relevant skill candidates supplied to the reflector. |
-| `confidenceThreshold` | `0.72` | Minimum proposal confidence accepted by deterministic validation. |
-| `agentValidation` | `true` | Runs the independent hidden validator after deterministic validation. |
-| `notify` | `true` | Adds synthetic session notices for forced reviews, staged proposals, applied changes, and failures. |
-| `projectSkillDir` | `.opencode/skills` | Skill directory relative to each foreground project's root. |
-| `stateDir` | `.opencode/.learning` | Runtime state directory relative to each foreground project's root. |
-| `globalSkillDir` | `~/.config/opencode/skills` | Destination used only by explicit skill promotion. Set an absolute path when overriding it. |
-| `reflectorAgent` | `learning-reflector` | Agent ID used to create internal reflection sessions. |
-| `validatorAgent` | `learning-validator` | Agent ID used to create internal validation sessions. |
-| `curator.enabled` | `true` | Enables stale and archive maintenance for plugin-owned project skills. |
-| `curator.checkEveryHours` | `24` | Minimum interval between automatic curator runs for an active project. |
-| `curator.staleAfterDays` | `30` | Marks an inactive plugin-owned project skill as stale. |
-| `curator.archiveAfterDays` | `90` | Moves an inactive plugin-owned project skill into the project archive. |
+## Verify
 
-`auto` mode never publishes a skill globally. Automatic proposals are forced to
-project scope. Global publication still requires `/learn-promote <skill-id>`
-and the `learning_promote` permission prompt.
-
-Paths in `projectSkillDir` and `stateDir` are resolved separately for every
-foreground project. Changing either option affects where new state is read and
-written; it does not move existing files.
-
-## Restart and verify
-
-Restart the V2 service so loaded project locations receive the plugin:
+Restart the V2 service:
 
 ```sh
 opencode2 service restart
 ```
 
-From a project directory, check the active plugins:
+From a project where the plugin should be active, verify that it loaded:
 
 ```sh
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-The response should contain:
+The response should contain `learning.skills`. Start OpenCode in that project
+and run `/learn-status` to check the agents, commands, paths, pending proposals,
+and recent reviews.
 
-```text
-learning.skills
-```
-
-Start OpenCode in that project and run:
-
-```text
-/learn-status
-```
-
-The status output should report both hidden agents, all learning commands, the
-current project root, and the project-specific state paths. If the plugin is
-missing after editing the config, inspect the server log for a load error:
+For loading failures, inspect the service log:
 
 ```sh
 grep 'learning.skills\|opencode-learning' ~/.local/share/opencode/log/opencode.log | tail -n 50
 ```
 
-## How project isolation works
+## Commands
 
-The plugin resolves each foreground session with `ctx.session.get()` and uses
-the session's `location.directory` as the project root. Each loaded project gets
-its own recorder, pending proposals, telemetry, curator state, and learned
-skills:
+| Command | Action |
+| --- | --- |
+| `/learn` | Force a review after the current turn. |
+| `/learn-pending` | List staged proposals for the current project. |
+| `/learn-show <id>` | Show a proposal, validation result, and preview. |
+| `/learn-approve <id>` | Apply a staged proposal and reload skills. |
+| `/learn-reject <id>` | Remove a staged proposal. |
+| `/learn-status` | Show configuration, components, paths, and recent reviews. |
+| `/learn-curate` | Run stale and archive maintenance. |
+| `/learn-promote <skill-id>` | Copy an owned project skill to the global registry. |
 
-```text
-<project>/.opencode/skills/
-<project>/.opencode/.learning/
-```
+## How it works
 
-The plugin installation directory is not used as a project root. Sessions from
-different projects do not share pending proposals or project telemetry.
-
-Runtime state under `<project>/.opencode/.learning/` contains review records,
-pending proposals, curator state, and archived plugin-owned skills. Add that
-directory to the project's ignore file if it should not be committed. Learned
-skills under `<project>/.opencode/skills/` are not temporary state and can be
-reviewed and committed with the project.
-
-## Learning flow
-
-The plugin records user corrections and non-learning tool activity. When the
-session execution finishes, it scores the completed experience. Work below the
-configured threshold is discarded. A qualifying experience follows this path:
+The plugin records user corrections and non-learning tool activity. At the end
+of a session execution, it scores the completed experience. Work below the
+configured threshold is discarded. A qualifying experience follows this flow:
 
 ```text
 completed project session
@@ -284,95 +217,109 @@ completed project session
   -> structured create, patch, or no-change proposal
   -> deterministic validation
   -> hidden validator agent
-  -> staged project proposal
-  -> explicit approval or rejection
+  -> staged proposal or automatic project update
 ```
 
-The default mode is `suggest`, so accepted proposals are staged instead of
-written immediately. Automatic reflection is restricted to project scope.
+The default `suggest` mode stages accepted proposals for explicit approval.
+`auto` applies validated project changes immediately. Neither mode publishes a
+skill globally. Global publication only occurs through `/learn-promote` and its
+permission prompt.
 
-The implementation uses the native V2 plugin context for session creation,
-prompts, hooks, structured tools, synthetic session messages, and skill reloads.
-Reflector and validator results arrive through restricted structured callback
-tools; internal sessions are interrupted after success or timeout. The public
-event stream is used only to observe foreground session completion, because the
-current `@opencode-ai/plugin@next` context does not expose the documented
-`session.wait` or session-message APIs. That stream is volatile, so automatic
-reviews are best effort; `/learn` explicitly forces the next observed review.
+The writer only creates new plugin-owned skills or patches existing
+plugin-owned skills. Patches require the current SHA-256. Supporting file paths
+must stay inside the skill directory, and existing supporting files are not
+overwritten.
 
-The writer can create a new plugin-owned skill or patch sections of an existing
-plugin-owned skill. It refuses to patch unrelated skills, requires the current
-SHA-256 for patches, rejects unsafe supporting-file paths, and does not
-overwrite existing supporting files.
+### Scoring
 
-New skill IDs are canonicalized before validation. Spaces, punctuation, and
-camel case are converted to lowercase kebab-case, IDs are limited to 64
-characters, and a missing ID is derived from `skill.name`. Patch IDs are never
-rewritten because they must identify an exact existing owned skill.
+Automatic review starts when the accumulated score reaches `scoreThreshold`.
+The score is calculated from the completed foreground session:
 
-## Commands
-
-| Command | Action |
+| Signal | Points |
 | --- | --- |
-| `/learn` | Force a review of the current completed session. |
-| `/learn-pending` | List staged proposals for the current project. |
-| `/learn-show <id>` | Show one proposal, its validation, and its preview. |
-| `/learn-approve <id>` | Apply one staged project proposal and reload skills. |
-| `/learn-reject <id>` | Remove one staged proposal. |
-| `/learn-status` | Show config, component discovery, paths, skills, and recent reviews. |
-| `/learn-curate` | Run stale and archive maintenance for the current project. |
-| `/learn-promote <skill-id>` | Copy one plugin-owned project skill into the global registry. |
+| Each tool call | 1 |
+| Each failed tool call | 3 additional |
+| Recovery after a failed call | 5 |
+| User correction | 8 |
+| Activated skill | 2 |
+| Verification step | 2 |
 
-## Global promotion
+`/learn` forces the review and bypasses this threshold.
 
-Promotion is the only operation that writes to the global skill directory:
+### Architecture and lifecycle
+
+The plugin uses V2 session context hooks to record the conversation tail and
+tool hooks to record tool outcomes. It resolves each foreground session through
+`ctx.session.get()`, so project paths come from the session location rather than
+the service process directory.
+
+Reflector and validator work runs in dedicated sessions with restricted
+structured callback tools. Their output is checked before any write. Internal
+sessions are interrupted after completion or timeout. Skill changes use the
+native skill reload capability, so accepted changes become available without a
+service restart.
+
+Automatic completion detection uses the public event stream. That stream is
+volatile by contract, so disconnected events are not replayed. `/learn` marks
+the current session for review when its next terminal event is observed.
+
+## Project data
+
+Every foreground project has separate storage:
+
+```text
+<project>/.opencode/skills/       learned skills
+<project>/.opencode/.learning/    proposals, telemetry, archives, curator state
+```
+
+Add `.opencode/.learning/` to the project's ignore file if runtime state should
+not be committed. Learned skills under `.opencode/skills/` can be reviewed and
+committed with the project.
+
+Promotion copies an owned project skill to:
 
 ```text
 ~/.config/opencode/skills/
 ```
 
-`/learn-promote <skill-id>` resolves the skill from the current project. The
-operation refuses a missing skill, a skill not owned by this plugin, or a global
-destination that already exists. It reserves the destination before copying
-and does not replace an existing global skill.
+It refuses missing or non-owned skills and does not replace an existing global
+skill.
 
-The global skill becomes available to other projects after the plugin reloads
-the skill registry. Later project learning remains project-local unless another
-promotion is approved.
+## Options
 
-## Defaults
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `mode` | `suggest` | `off`, `suggest`, or `auto`. |
+| `scoreThreshold` | `10` | Minimum score for automatic review. `/learn` bypasses it. |
+| `reviewerTimeoutMs` | `120000` | Timeout for each reflector or validator session. |
+| `maxEventsPerSession` | `120` | Maximum retained tool events per foreground session. |
+| `maxCandidates` | `5` | Maximum skill candidates sent to the reflector. |
+| `confidenceThreshold` | `0.72` | Minimum proposal confidence. |
+| `agentValidation` | `true` | Run the hidden validator. |
+| `notify` | `true` | Add synthetic session notices. |
+| `projectSkillDir` | `.opencode/skills` | Learned-skill path relative to the project root. |
+| `stateDir` | `.opencode/.learning` | Runtime-state path relative to the project root. |
+| `globalSkillDir` | `~/.config/opencode/skills` | Explicit promotion destination. |
+| `reflectorAgent` | `learning-reflector` | Reflector agent ID. |
+| `validatorAgent` | `learning-validator` | Validator agent ID. |
+| `curator.enabled` | `true` | Enable stale and archive maintenance. |
+| `curator.checkEveryHours` | `24` | Minimum interval between curator runs. |
+| `curator.staleAfterDays` | `30` | Mark inactive owned skills as stale. |
+| `curator.archiveAfterDays` | `90` | Move inactive owned skills to the archive. |
 
-The bundled defaults are:
+## Remove
 
-| Setting | Default |
-| --- | --- |
-| Mode | `suggest` |
-| Review score threshold | `10` |
-| Proposal confidence threshold | `0.72` |
-| Independent agent validation | enabled |
-| User notifications | enabled |
-| Project skill directory | `.opencode/skills` |
-| Project state directory | `.opencode/.learning` |
-| Curator check interval | 24 hours |
-| Mark stale after | 30 days |
-| Archive after | 90 days |
-
-The curator only manages project skills marked as owned by
-`opencode-learning`. It moves old skills into the project's learning archive
-and never permanently deletes them.
-
-## Remove the plugin
-
-Remove the plugin path and the three learning permission rules from the global
-OpenCode config. Then remove the installed runtime, agents, and commands:
+Set `TARGET` to the same global or project-local directory used during
+installation. Remove the plugin path and three learning permission rules from
+`$TARGET/opencode.json(c)`, then remove the installed files:
 
 ```sh
-rm -r ~/.config/opencode/plugins/opencode-learning
-rm ~/.config/opencode/agents/learning-reflector.md
-rm ~/.config/opencode/agents/learning-validator.md
-rm ~/.config/opencode/commands/learn*.md
+rm -r "$TARGET/plugins/opencode-learning"
+rm "$TARGET/agents/learning-reflector.md"
+rm "$TARGET/agents/learning-validator.md"
+rm "$TARGET"/commands/learn*.md
 opencode2 service restart
 ```
 
-This does not remove project skills, project learning state, archives, or
-globally promoted skills. Remove those separately only after reviewing them.
+This leaves learned skills, runtime state, archives, and promoted global skills
+untouched.
