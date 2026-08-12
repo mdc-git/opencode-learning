@@ -1262,14 +1262,11 @@ var index_default = Plugin.define({
     const runtimes = /* @__PURE__ */ new Map();
     const sessionDirectories = /* @__PURE__ */ new Map();
     const runtimeForSession = async (sessionID) => {
-      let directory = sessionDirectories.get(sessionID);
-      if (!directory) {
-        const session = await adapter.getSession(sessionID);
-        directory = session?.location?.directory;
-        if (!directory) throw new Error(`session ${sessionID} has no project directory`);
-        directory = await canonicalDirectory(directory);
-        sessionDirectories.set(sessionID, directory);
-      }
+      const session = await adapter.getSession(sessionID);
+      let directory = session?.location?.directory;
+      if (!directory) throw new Error(`session ${sessionID} has no project directory`);
+      directory = await canonicalDirectory(directory);
+      sessionDirectories.set(sessionID, directory);
       let runtime = runtimes.get(directory);
       if (!runtime) {
         runtime = createRuntime({ directory, config, adapter, mailbox });
@@ -1281,10 +1278,14 @@ var index_default = Plugin.define({
     await registerTools(ctx, { config, mailbox, adapter, runtimeForSession });
     adapter.start();
     const removeTerminalListener = adapter.onExecutionTerminal((event) => {
-      if (!sessionDirectories.has(event.sessionID)) return;
-      void runtimeForSession(event.sessionID).then((runtime) => {
+      const eventDirectory = event.location?.directory ?? sessionDirectories.get(event.sessionID);
+      if (!eventDirectory) return;
+      void canonicalDirectory(eventDirectory).then(async (directory) => {
+        if (sessionDirectories.get(event.sessionID) === directory) sessionDirectories.delete(event.sessionID);
+        const runtime = runtimes.get(directory);
+        if (!runtime) return;
+        await runtime.ready;
         runtime.pipeline.executionFinished(event.sessionID);
-        sessionDirectories.delete(event.sessionID);
       }).catch((error) => console.error("[opencode-learning] terminal event routing failed", error));
     });
     await ctx.session.hook("context", async (event) => {
