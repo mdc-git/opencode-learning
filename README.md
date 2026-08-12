@@ -1,12 +1,10 @@
 # OpenCode procedural learning
 
-This is a global OpenCode V2 plugin that extracts reusable procedures from
-completed sessions and stores them as native OpenCode skills.
-
-The plugin is installed once in the global OpenCode config directory. Learning
-state remains separate for each project. A project skill is copied into the
-global skill registry only when you run `/learn-promote <skill-id>` and approve
-the permission request.
+This OpenCode V2 plugin extracts reusable procedures from completed sessions
+and stores them as native OpenCode skills. Install it globally for every
+project or locally for one project. Learning state remains separate for each
+project in either case. A project skill is copied into the global skill registry
+only when you run `/learn-promote <skill-id>` and approve the permission request.
 
 ## Package contents
 
@@ -28,7 +26,6 @@ opencode-learning/
 |   `-- opencode-learning/
 |       `-- index.ts
 |-- opencode.jsonc.example
-|-- package.json.example
 `-- README.md
 ```
 
@@ -38,11 +35,15 @@ because OpenCode discovers them natively.
 
 ## Before copying
 
-Back up the global OpenCode configuration if it contains files with the same
-names:
+Back up the config directory for the chosen install scope if it contains files
+with the same names:
 
 ```sh
+# Global install
 cp -a ~/.config/opencode ~/.config/opencode.backup
+
+# Project-local install
+cp -a <project>/.opencode <project>/.opencode.backup
 ```
 
 The package does not contain `opencode.json`, `opencode.jsonc`, or
@@ -56,7 +57,7 @@ commands.
 git clone https://github.com/mdc-git/opencode-learning.git
 ```
 
-## Copy the files
+## Global install
 
 Run this from the directory that contains `opencode-learning`:
 
@@ -65,6 +66,8 @@ mkdir -p ~/.config/opencode/agents ~/.config/opencode/commands ~/.config/opencod
 cp ./opencode-learning/agents/*.md ~/.config/opencode/agents/
 cp ./opencode-learning/commands/*.md ~/.config/opencode/commands/
 cp ./opencode-learning/plugins/opencode-learning/index.ts ~/.config/opencode/plugins/opencode-learning/
+cd ~/.config/opencode
+npm install @opencode-ai/plugin@next
 ```
 
 After copying, the installed files should include:
@@ -83,39 +86,31 @@ After copying, the installed files should include:
 ~/.config/opencode/plugins/opencode-learning/index.ts
 ```
 
-## Check the plugin dependency
+Use `~/.config/opencode/opencode.json` or `opencode.jsonc` for the configuration
+described below.
 
-The TypeScript plugin imports `@opencode-ai/plugin`. OpenCode does not expose
-its private runtime copy to local plugin files, so the package must be visible
-from `~/.config/opencode/node_modules`.
+## Project-local install
 
-Check whether the global config already provides it:
-
-```sh
-cd ~/.config/opencode
-npm ls @opencode-ai/plugin --depth=0
-```
-
-If the command reports an installed package, no additional install is needed.
-This is commonly already present when another local V2 plugin, such as
-`js-repl.ts`, uses the same import.
-
-If it is missing, merge the dependency from `package.json.example` into the
-existing `~/.config/opencode/package.json`, then install:
+Run this from the directory that contains `opencode-learning`, replacing
+`<project>` with the target project directory:
 
 ```sh
-cd ~/.config/opencode
-npm install
+mkdir -p <project>/.opencode/agents <project>/.opencode/commands <project>/.opencode/plugins/opencode-learning
+cp ./opencode-learning/agents/*.md <project>/.opencode/agents/
+cp ./opencode-learning/commands/*.md <project>/.opencode/commands/
+cp ./opencode-learning/plugins/opencode-learning/index.ts <project>/.opencode/plugins/opencode-learning/
+cd <project>/.opencode
+npm install @opencode-ai/plugin@next
 ```
 
-Do not replace an existing global `package.json` with `package.json.example`.
-The example contains only the dependency this plugin needs and uses the
-`@opencode-ai/plugin@next` dist-tag.
+Use `<project>/.opencode/opencode.json` or
+`<project>/.opencode/opencode.jsonc` for the configuration described below.
+The plugin, agents, and commands will only be available in that project.
 
 ## Update the OpenCode config
 
-Open `~/.config/opencode/opencode.json` or
-`~/.config/opencode/opencode.jsonc` and make two changes.
+Open the global or project-local configuration file for the chosen install
+scope and make two changes.
 
 Add these permission rules to the existing `permissions` array:
 
@@ -143,7 +138,7 @@ loads `js-repl.ts`, it can look like this:
 
 Keep all unrelated config entries. `opencode.jsonc.example` contains a
 complete fragment with the permissions and plugin entry, but it is an example
-to merge, not a replacement for your global config.
+to merge, not a replacement for the existing config.
 
 ## Configure the plugin
 
@@ -223,8 +218,7 @@ written; it does not move existing files.
 
 ## Restart and verify
 
-Restart the V2 service so loaded project locations receive the new global
-plugin:
+Restart the V2 service so loaded project locations receive the plugin:
 
 ```sh
 opencode2 service restart
