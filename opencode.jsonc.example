@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
+    { "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
+    { "action": "learning_promote", "resource": "*", "effect": "ask" }
+  ],
+  "plugins": [
+    {
+      "package": "./plugins/opencode-learning/index.ts",
+      "options": {
+        "mode": "suggest",
+        "scoreThreshold": 10,
+        "confidenceThreshold": 0.72,
+        "agentValidation": true,
+        "notify": true,
+        "projectSkillDir": ".opencode/skills",
+        "stateDir": ".opencode/.learning",
+        "reflectorAgent": "learning-reflector",
+        "validatorAgent": "learning-validator",
+        "curator": {
+          "enabled": true,
+          "checkEveryHours": 24,
+          "staleAfterDays": 30,
+          "archiveAfterDays": 90
+        }
+      }
+    }
+  ]
+}
