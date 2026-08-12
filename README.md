@@ -22,35 +22,51 @@ mode stages the result without changing the skill registry.
 
 ## Example workflows
 
-### Preserve a package-manager workaround
+### Run the right checks before a pull request
 
-A session discovers that installing an npm dist-tag resolves the correct
-package but rewrites the requested manifest value. The agent restores the
-literal tag and verifies the installed package. After the turn, the plugin can
-stage a skill containing the exact edit and verification sequence:
+A repository may require more than its obvious test command. During a feature
+session, OpenCode learns that generated files must be refreshed first, type
+checking must run from a package subdirectory, and one targeted integration
+command catches failures the root test script misses. The plugin can preserve
+that verified sequence for future changes in the repository.
 
-```text
-session finds and fixes npm manifest normalization
-  -> reflector extracts the reusable procedure
-  -> validator checks it against recorded tool evidence
-  -> /learn-show displays the proposed skill
-  -> /learn-approve publishes it to .opencode/skills/
-```
+### Diagnose a flaky test
 
-### Capture a project deployment sequence
+A test fails intermittently because it depends on stale fixtures, an existing
+development server, or a specific environment variable. OpenCode tries several
+approaches, identifies the actual precondition, and confirms the reliable
+reproduction and cleanup steps. The resulting skill can guide the next agent
+straight to the useful diagnostic sequence.
 
-A deployment only succeeds after files are copied in a particular order, a
-service is restarted, and an API health check is run. The plugin can propose a
-project skill that records those steps and the failure conditions observed in
-the session. Future agents can activate that skill before deploying the same
-project.
+### Follow repository conventions
 
-### Improve an existing learned skill
+A user corrects OpenCode for editing generated output instead of its source,
+placing a component in the wrong package, or using a library the project has
+intentionally avoided. The plugin can turn the correction and the successful
+follow-up into a project skill that records where changes belong and how they
+should be verified.
 
-If a later session finds a safer or shorter procedure, the reflector can
-propose a section-level patch instead of creating a duplicate skill. The patch
-includes the current SHA-256, so approval fails if the skill changed after the
-proposal was created.
+### Upgrade a dependency safely
+
+A dependency upgrade needs a configuration rename, regenerated artifacts, and
+a focused smoke test in addition to changing the version. Once OpenCode
+completes and verifies the upgrade, the plugin can preserve the repository's
+upgrade procedure for the next release.
+
+### Recover a local development environment
+
+The application stops starting after a branch switch because cached build
+output, containers, or generated clients are stale. OpenCode finds the minimum
+cleanup and restart sequence and verifies the health endpoint. That sequence
+can become a reusable troubleshooting skill instead of being rediscovered the
+next time the environment breaks.
+
+### Refine a procedure over time
+
+If a later session finds that an existing learned procedure is incomplete or
+outdated, the plugin can stage a focused patch rather than creating a duplicate
+skill. Approval fails when the original skill changed after the patch was
+proposed.
 
 Use `/learn` when a short session contains valuable knowledge but does not meet
 the automatic score threshold. Use `/learn-pending` to review all staged
