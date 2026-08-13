@@ -1,15 +1,13 @@
-// learning/src/index.js
-import fs3 from "node:fs/promises";
-import path6 from "node:path";
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import crypto from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { Plugin } from "@opencode-ai/plugin";
 
-// learning/src/config.js
-import os from "node:os";
-import path from "node:path";
-var DEFAULTS = Object.freeze({
+const DEFAULTS = Object.freeze({
   enabled: true,
   mode: "suggest",
-  // off | suggest | auto
   scoreThreshold: 10,
   reviewerTimeoutMs: 12e4,
   maxEventsPerSession: 120,
@@ -29,6 +27,7 @@ var DEFAULTS = Object.freeze({
     archiveAfterDays: 90
   }
 });
+
 function loadConfig(options = {}) {
   const mode = ["off", "suggest", "auto"].includes(options.mode) ? options.mode : DEFAULTS.mode;
   const curator = {
@@ -46,34 +45,36 @@ function loadConfig(options = {}) {
   };
 }
 
-// learning/src/util.js
-import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path2 from "node:path";
 function sha256(text) {
   return crypto.createHash("sha256").update(text).digest("hex");
 }
+
 function nowIso() {
-  return (/* @__PURE__ */ new Date()).toISOString();
+  return new Date().toISOString();
 }
+
 function safeId(value) {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 64;
 }
+
 function canonicalSkillId(value) {
   if (typeof value !== "string") return "";
   return value.normalize("NFKD").replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64).replace(/-+$/g, "");
 }
+
 function normalizeCreateProposal(proposal) {
   if (proposal?.decision !== "create") return proposal;
   const skillId = canonicalSkillId(proposal.skillId) || canonicalSkillId(proposal.skill?.name);
   return { ...proposal, skillId };
 }
+
 async function atomicWrite(file, text) {
-  await fs.mkdir(path2.dirname(file), { recursive: true });
+  await fs.mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
   await fs.writeFile(temp, text, { encoding: "utf8", mode: 384 });
   await fs.rename(temp, file);
 }
+
 async function readJson(file, fallback) {
   try {
     return JSON.parse(await fs.readFile(file, "utf8"));
@@ -82,22 +83,31 @@ async function readJson(file, fallback) {
     throw error;
   }
 }
+
 async function writeJson(file, value) {
-  await atomicWrite(file, `${JSON.stringify(value, null, 2)}
-`);
+  await atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
 }
+
 function trimText(value, max = 4e3) {
   if (value == null) return "";
   const text = typeof value === "string" ? value : JSON.stringify(value);
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}
-\u2026[truncated ${text.length - max} chars]`;
+  return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`;
 }
+
 function extractText(value, depth = 0) {
   if (depth > 8 || value == null) return "";
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map((x) => extractText(x, depth + 1)).filter(Boolean).join("\n");
   if (typeof value !== "object") return "";
+  if (typeof value.type === "string") {
+    if ((value.type === "text" || value.type === "reasoning") && typeof value.text === "string") return value.text;
+    if (value.type === "tool-result" && value.result?.value != null) {
+      return typeof value.result.value === "string" ? value.result.value : extractText(value.result.value, depth + 1);
+    }
+    if (value.type === "tool-call" && value.input != null) return extractText(value.input, depth + 1);
+  }
+  if (Array.isArray(value.content)) return extractText(value.content, depth + 1);
   for (const key of ["text", "content", "message", "output"]) {
     if (key in value) {
       const text = extractText(value[key], depth + 1);
@@ -106,26 +116,28 @@ function extractText(value, depth = 0) {
   }
   return "";
 }
+
 function messageRole(message) {
-  if (!message || typeof message !== "object") return void 0;
-  return message.role ?? message.type ?? message.kind;
+  if (!message || typeof message !== "object") return undefined;
+  return message.role;
 }
+
 function daysSince(epochMs, now = Date.now()) {
   return (now - epochMs) / 864e5;
 }
+
 function redactError(error) {
   if (!error) return "unknown error";
   return trimText(error?.message ?? error, 800);
 }
+const CORRECTION_RE = /\b(no|don't|do not|instead|actually|never|must|wrong|correction|not that|shouldn't|should not)\b/i;
+const VERIFY_RE = /\b(test|tests|verify|verification|check|lint|typecheck|type-check|build|compile|smoke)\b/i;
 
-// learning/src/recorder.js
-var CORRECTION_RE = /\b(no|don't|do not|instead|actually|never|must|wrong|correction|not that|shouldn't|should not)\b/i;
-var VERIFY_RE = /\b(test|tests|verify|verification|check|lint|typecheck|type-check|build|compile|smoke)\b/i;
-var ExperienceRecorder = class {
+class ExperienceRecorder {
   constructor({ maxEventsPerSession = 120 } = {}) {
     this.maxEventsPerSession = maxEventsPerSession;
-    this.sessions = /* @__PURE__ */ new Map();
-    this.pendingTools = /* @__PURE__ */ new Map();
+    this.sessions = new Map();
+    this.pendingTools = new Map();
   }
   get(sessionID) {
     if (!this.sessions.has(sessionID)) {
@@ -136,9 +148,9 @@ var ExperienceRecorder = class {
         goal: "",
         contextTail: [],
         corrections: [],
-        seenUserMessages: /* @__PURE__ */ new Set(),
+        seenUserMessages: new Set(),
         toolCalls: [],
-        skillsUsed: /* @__PURE__ */ new Set(),
+        skillsUsed: new Set(),
         recoveries: 0,
         verificationSteps: 0
       });
@@ -147,7 +159,7 @@ var ExperienceRecorder = class {
   }
   observeContext(event) {
     const sessionID = event?.sessionID;
-    if (!sessionID) return void 0;
+    if (!sessionID) return undefined;
     const exp = this.get(sessionID);
     exp.updatedAt = Date.now();
     const messages = Array.isArray(event.messages) ? event.messages : [];
@@ -177,27 +189,27 @@ var ExperienceRecorder = class {
     });
   }
   toolAfter(event) {
-    if (!event?.sessionID || !event?.tool) return void 0;
+    if (!event?.sessionID || !event?.tool) return undefined;
     const exp = this.get(event.sessionID);
     const callID = event.id;
     const key = `${event.sessionID}:${callID}`;
     const pending = this.pendingTools.get(key);
     if (pending) this.pendingTools.delete(key);
-    const failed = event.status === "error" || Boolean(event.error);
-    const input = pending?.input ?? trimText(event.input, 2500);
+    const failed = event.status === "error";
+    const input = pending?.input ?? trimText(extractText(event.input), 2500);
     const record = {
       tool: event.tool,
       input,
       status: failed ? "error" : "success",
-      result: trimText(failed ? event.error : event.result, 3e3),
-      durationMs: pending ? Date.now() - pending.startedAt : void 0,
+      result: trimText(extractText(failed ? event.error : event.result), 3e3),
+      durationMs: pending ? Date.now() - pending.startedAt : undefined,
       at: Date.now()
     };
     exp.toolCalls.push(record);
     if (exp.toolCalls.length > this.maxEventsPerSession) exp.toolCalls.shift();
     exp.updatedAt = Date.now();
     if (event.tool === "skill") {
-      const raw = typeof event.input === "object" ? event.input?.name ?? event.input?.id ?? event.input?.skill : void 0;
+      const raw = typeof event.input === "object" ? event.input?.name ?? event.input?.id ?? event.input?.skill : undefined;
       if (typeof raw === "string") exp.skillsUsed.add(raw);
     }
     const prev = exp.toolCalls.at(-2);
@@ -207,11 +219,11 @@ var ExperienceRecorder = class {
   }
   snapshot(sessionID) {
     const exp = this.sessions.get(sessionID);
-    if (!exp) return void 0;
+    if (!exp) return undefined;
     return {
       ...exp,
       skillsUsed: [...exp.skillsUsed],
-      seenUserMessages: void 0,
+      seenUserMessages: undefined,
       toolCalls: exp.toolCalls.map((x) => ({ ...x })),
       corrections: [...exp.corrections],
       contextTail: exp.contextTail.map((x) => ({ ...x }))
@@ -220,26 +232,21 @@ var ExperienceRecorder = class {
   clear(sessionID) {
     this.sessions.delete(sessionID);
   }
-};
-// learning/src/skill-store.js
-import fs2 from "node:fs/promises";
-import path3 from "node:path";
-import { randomUUID } from "node:crypto";
-
-// learning/src/proposal.js
-var SECRET_PATTERNS = [
+}
+const SECRET_PATTERNS = [
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/i,
   /\b(?:sk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{16,}\b/,
   /\bAKIA[0-9A-Z]{16}\b/,
   /\b(?:password|passwd|api[_-]?key|secret|token)\s*[:=]\s*[^\s]{8,}/i
 ];
-var TRANSIENT_PATTERNS = [
+const TRANSIENT_PATTERNS = [
   /\/tmp\//,
   /\/var\/tmp\//,
   /\/home\/[A-Za-z0-9._-]+\//,
   /\b20\d\d[-/]\d\d[-/]\d\d[T ]\d\d:/,
   /\bpid\s*[=:]?\s*\d{2,}\b/i
 ];
+
 function validateProposal(proposal, { confidenceThreshold = 0.72 } = {}) {
   const errors = [];
   const warnings = [];
@@ -278,6 +285,7 @@ function validateProposal(proposal, { confidenceThreshold = 0.72 } = {}) {
   }
   return { ok: errors.length === 0, errors, warnings };
 }
+
 function validateSupportingFiles(files, errors, label) {
   if (files == null) return;
   if (!Array.isArray(files)) {
@@ -293,13 +301,15 @@ function validateSupportingFiles(files, errors, label) {
     if (typeof file.content !== "string" || !file.content.trim()) errors.push(`${label} content is required`);
   }
 }
+
 function safeSupportPath(value) {
   if (typeof value !== "string" || !value || value.length > 180) return false;
   if (value === "SKILL.md" || value.startsWith("/") || value.includes("\\")) return false;
   const parts = value.split("/");
   return parts.every((part) => part && part !== "." && part !== ".." && !part.startsWith("."));
 }
-var proposalInputSchema = {
+
+const proposalInputSchema = {
   type: "object",
   properties: {
     decision: { type: "string", enum: ["none", "create", "patch"] },
@@ -353,7 +363,8 @@ var proposalInputSchema = {
   required: ["decision", "reason", "confidence", "evidence"],
   additionalProperties: false
 };
-var validationInputSchema = {
+
+const validationInputSchema = {
   type: "object",
   properties: {
     decision: { type: "string", enum: ["accept", "reject"] },
@@ -363,44 +374,43 @@ var validationInputSchema = {
   required: ["decision", "reason", "warnings"],
   additionalProperties: false
 };
+const OWNER_MARKER = 'learning/owner: "opencode-learning"';
 
-// learning/src/skill-store.js
-var OWNER_MARKER = 'learning/owner: "opencode-learning"';
-var SkillStore = class {
+class SkillStore {
   constructor({ projectRoot, projectSkillDir, globalSkillDir, stateDir }) {
     this.projectRoot = projectRoot;
-    this.projectRootSkills = path3.resolve(projectRoot, projectSkillDir);
-    this.globalRootSkills = path3.resolve(globalSkillDir);
-    this.stateRoot = path3.resolve(projectRoot, stateDir);
-    this.pendingRoot = path3.join(this.stateRoot, "pending");
-    this.archiveRoot = path3.join(this.stateRoot, "archive");
+    this.projectRootSkills = path.resolve(projectRoot, projectSkillDir);
+    this.globalRootSkills = path.resolve(globalSkillDir);
+    this.stateRoot = path.resolve(projectRoot, stateDir);
+    this.pendingRoot = path.join(this.stateRoot, "pending");
+    this.archiveRoot = path.join(this.stateRoot, "archive");
   }
   root(scope = "project") {
     return scope === "global" ? this.globalRootSkills : this.projectRootSkills;
   }
   skillDir(skillId, scope = "project") {
     if (!safeId(skillId)) throw new Error(`invalid skill id: ${skillId}`);
-    return path3.join(this.root(scope), skillId);
+    return path.join(this.root(scope), skillId);
   }
   skillPath(skillId, scope = "project") {
-    return path3.join(this.skillDir(skillId, scope), "SKILL.md");
+    return path.join(this.skillDir(skillId, scope), "SKILL.md");
   }
   async getOwned(skillId, scope = "project") {
     const file = this.skillPath(skillId, scope);
     try {
-      const text = await fs2.readFile(file, "utf8");
-      if (!text.includes(OWNER_MARKER)) return void 0;
+      const text = await fs.readFile(file, "utf8");
+      if (!text.includes(OWNER_MARKER)) return undefined;
       return {
         skillId,
         scope,
         file,
-        dir: path3.dirname(file),
+        dir: path.dirname(file),
         text,
         sha256: sha256(text),
         supportingFiles: await this.listSupportingFiles(skillId, scope)
       };
     } catch (error) {
-      if (error?.code === "ENOENT") return void 0;
+      if (error?.code === "ENOENT") return undefined;
       throw error;
     }
   }
@@ -414,7 +424,7 @@ var SkillStore = class {
     const root = this.root(scope);
     let dirs;
     try {
-      dirs = await fs2.readdir(root, { withFileTypes: true });
+      dirs = await fs.readdir(root, { withFileTypes: true });
     } catch (error) {
       if (error?.code === "ENOENT") return [];
       throw error;
@@ -445,9 +455,9 @@ ${skill.body.trim()}
   }
   async create(proposal, { scope = "project" } = {}) {
     const dir = this.skillDir(proposal.skillId, scope);
-    const file = path3.join(dir, "SKILL.md");
+    const file = path.join(dir, "SKILL.md");
     try {
-      await fs2.access(file);
+      await fs.access(file);
       throw new Error(`skill already exists: ${proposal.skillId}`);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
@@ -457,7 +467,7 @@ ${skill.body.trim()}
     try {
       await this.addSupportingFiles(dir, proposal.skill?.files ?? []);
     } catch (error) {
-      await fs2.rm(dir, { recursive: true, force: true });
+      await fs.rm(dir, { recursive: true, force: true });
       throw error;
     }
     return { file, text, sha256: sha256(text), supportingFiles: proposal.skill?.files?.map((x) => x.path) ?? [] };
@@ -469,7 +479,7 @@ ${skill.body.trim()}
     for (const item of proposal.addFiles ?? []) {
       const target = supportPath(current.dir, item.path);
       try {
-        await fs2.access(target);
+        await fs.access(target);
         throw new Error(`refusing to overwrite existing supporting file: ${item.path}`);
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
@@ -490,14 +500,13 @@ ${skill.body.trim()}
   }
   async stage(proposal, validation) {
     const id = `${Date.now()}-${randomUUID()}-${proposal.skillId ?? "none"}`;
-    const dir = path3.join(this.pendingRoot, id);
-    await fs2.mkdir(dir, { recursive: true });
-    await atomicWrite(path3.join(dir, "proposal.json"), `${JSON.stringify({ proposal, validation }, null, 2)}
-`);
+    const dir = path.join(this.pendingRoot, id);
+    await fs.mkdir(dir, { recursive: true });
+    await atomicWrite(path.join(dir, "proposal.json"), `${JSON.stringify({ proposal, validation }, null, 2)}\n`);
     if (proposal.decision === "create") {
-      await atomicWrite(path3.join(dir, "SKILL.preview.md"), this.renderCreated(proposal));
+      await atomicWrite(path.join(dir, "SKILL.preview.md"), this.renderCreated(proposal));
       for (const file of proposal.skill?.files ?? []) {
-        await atomicWrite(path3.join(dir, "FILES", file.path), file.content);
+        await atomicWrite(path.join(dir, "FILES", file.path), file.content);
       }
     } else if (proposal.decision === "patch") {
       const current = await this.getOwned(proposal.skillId, proposal.scope ?? "project");
@@ -505,10 +514,10 @@ ${skill.body.trim()}
         let next = current.text;
         for (const op of proposal.operations ?? []) next = applySectionOperation(next, op);
         next = bumpVersion(next);
-        await atomicWrite(path3.join(dir, "BEFORE.md"), current.text);
-        await atomicWrite(path3.join(dir, "AFTER.md"), next);
+        await atomicWrite(path.join(dir, "BEFORE.md"), current.text);
+        await atomicWrite(path.join(dir, "AFTER.md"), next);
         for (const file of proposal.addFiles ?? []) {
-          await atomicWrite(path3.join(dir, "FILES", file.path), file.content);
+          await atomicWrite(path.join(dir, "FILES", file.path), file.content);
         }
       }
     }
@@ -517,7 +526,7 @@ ${skill.body.trim()}
   async listPending() {
     let entries;
     try {
-      entries = await fs2.readdir(this.pendingRoot, { withFileTypes: true });
+      entries = await fs.readdir(this.pendingRoot, { withFileTypes: true });
     } catch (error) {
       if (error?.code === "ENOENT") return [];
       throw error;
@@ -526,7 +535,7 @@ ${skill.body.trim()}
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       try {
-        const raw = JSON.parse(await fs2.readFile(path3.join(this.pendingRoot, entry.name, "proposal.json"), "utf8"));
+        const raw = JSON.parse(await fs.readFile(path.join(this.pendingRoot, entry.name, "proposal.json"), "utf8"));
         out.push({ id: entry.name, ...raw });
       } catch {
       }
@@ -535,31 +544,31 @@ ${skill.body.trim()}
   }
   async getPending(id) {
     const dir = safePending(this.pendingRoot, id);
-    const raw = JSON.parse(await fs2.readFile(path3.join(dir, "proposal.json"), "utf8"));
-    const result2 = { id, ...raw, previews: {} };
+    const raw = JSON.parse(await fs.readFile(path.join(dir, "proposal.json"), "utf8"));
+    const result = { id, ...raw, previews: {} };
     for (const name of ["SKILL.preview.md", "BEFORE.md", "AFTER.md"]) {
       try {
-        result2.previews[name] = await fs2.readFile(path3.join(dir, name), "utf8");
+        result.previews[name] = await fs.readFile(path.join(dir, name), "utf8");
       } catch (error) {
         if (error?.code !== "ENOENT") throw error;
       }
     }
-    return result2;
+    return result;
   }
   async applyPending(id) {
     const dir = safePending(this.pendingRoot, id);
-    const raw = JSON.parse(await fs2.readFile(path3.join(dir, "proposal.json"), "utf8"));
+    const raw = JSON.parse(await fs.readFile(path.join(dir, "proposal.json"), "utf8"));
     const proposal = raw.proposal;
-    let result2;
-    if (proposal.decision === "create") result2 = await this.create(proposal, { scope: proposal.scope ?? "project" });
-    else if (proposal.decision === "patch") result2 = await this.patch(proposal, { scope: proposal.scope ?? "project" });
-    else result2 = { skipped: true };
-    await fs2.rm(dir, { recursive: true, force: true });
-    return { result: result2, proposal };
+    let result;
+    if (proposal.decision === "create") result = await this.create(proposal, { scope: proposal.scope ?? "project" });
+    else if (proposal.decision === "patch") result = await this.patch(proposal, { scope: proposal.scope ?? "project" });
+    else result = { skipped: true };
+    await fs.rm(dir, { recursive: true, force: true });
+    return { result, proposal };
   }
   async rejectPending(id) {
     const dir = safePending(this.pendingRoot, id);
-    await fs2.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true });
   }
   async promote(skillId) {
     const source = await this.getOwned(skillId, "project");
@@ -567,25 +576,25 @@ ${skill.body.trim()}
     if (await this.getOwned(skillId, "global")) throw new Error(`global skill already exists: ${skillId}`);
     const target = this.skillDir(skillId, "global");
     try {
-      await fs2.access(target);
+      await fs.access(target);
       throw new Error(`global skill path already exists: ${skillId}`);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await fs2.mkdir(this.globalRootSkills, { recursive: true });
+    await fs.mkdir(this.globalRootSkills, { recursive: true });
     let reserved = false;
     try {
-      await fs2.mkdir(target);
+      await fs.mkdir(target);
       reserved = true;
-      for (const entry of await fs2.readdir(source.dir)) {
-        await fs2.cp(path3.join(source.dir, entry), path3.join(target, entry), {
+      for (const entry of await fs.readdir(source.dir)) {
+        await fs.cp(path.join(source.dir, entry), path.join(target, entry), {
           recursive: true,
           force: false,
           errorOnExist: true
         });
       }
     } catch (error) {
-      if (reserved) await fs2.rm(target, { recursive: true, force: true });
+      if (reserved) await fs.rm(target, { recursive: true, force: true });
       throw error;
     }
     return { skillId, source: source.dir, target };
@@ -593,78 +602,76 @@ ${skill.body.trim()}
   async archive(skillId, { scope = "project" } = {}) {
     const current = await this.getOwned(skillId, scope);
     if (!current) return false;
-    const target = path3.join(this.archiveRoot, scope, `${Date.now()}-${skillId}`);
-    await fs2.mkdir(path3.dirname(target), { recursive: true });
-    await fs2.rename(current.dir, target);
+    const target = path.join(this.archiveRoot, scope, `${Date.now()}-${skillId}`);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.rename(current.dir, target);
     return true;
   }
-};
+}
+
 function applySectionOperation(markdown, op) {
   const heading = op.heading.trim().replace(/^#+\s*/, "");
-  const section = `## ${heading}
-
-${op.body.trim()}
-`;
+  const section = `## ${heading}\n\n${op.body.trim()}\n`;
   const re = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, "mi");
   const match = re.exec(markdown);
-  if (op.kind === "append_section" || !match) return `${markdown.trimEnd()}
-
-${section}`;
+  if (op.kind === "append_section" || !match) return `${markdown.trimEnd()}\n\n${section}`;
   const start = match.index;
   const afterHeading = start + match[0].length;
   const rest = markdown.slice(afterHeading);
   const next = /^##\s+.+$/m.exec(rest);
   const end = next ? afterHeading + next.index : markdown.length;
-  return `${markdown.slice(0, start)}${section}
-${markdown.slice(end).replace(/^\s+/, "")}`;
+  return `${markdown.slice(0, start)}${section}\n${markdown.slice(end).replace(/^\s+/, "")}`;
 }
+
 function bumpVersion(text) {
   const version = /learning\/version:\s*["']?(\d+)["']?/.exec(text);
   if (!version) return text;
   const next = Number(version[1]) + 1;
   return text.replace(version[0], `learning/version: "${next}"`);
 }
+
 function yamlScalar(value) {
   return JSON.stringify(String(value));
 }
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
 function safePending(root, id) {
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) throw new Error("invalid pending id");
-  const dir = path3.join(root, id);
-  if (!dir.startsWith(root + path3.sep)) throw new Error("invalid pending path");
+  const dir = path.join(root, id);
+  if (!dir.startsWith(root + path.sep)) throw new Error("invalid pending path");
   return dir;
 }
+
 function supportPath(skillDir, relative) {
   if (!safeSupportPath(relative)) throw new Error(`invalid supporting file path: ${relative}`);
-  const target = path3.resolve(skillDir, relative);
-  if (!target.startsWith(path3.resolve(skillDir) + path3.sep)) throw new Error(`supporting file escapes skill directory: ${relative}`);
+  const target = path.resolve(skillDir, relative);
+  if (!target.startsWith(path.resolve(skillDir) + path.sep)) throw new Error(`supporting file escapes skill directory: ${relative}`);
   return target;
 }
+
 async function walk(root, current, out) {
   let entries;
   try {
-    entries = await fs2.readdir(current, { withFileTypes: true });
+    entries = await fs.readdir(current, { withFileTypes: true });
   } catch (error) {
     if (error?.code === "ENOENT") return;
     throw error;
   }
   for (const entry of entries) {
-    const full = path3.join(current, entry.name);
+    const full = path.join(current, entry.name);
     if (entry.isDirectory()) await walk(root, full, out);
     else if (entry.isFile()) {
-      const stat = await fs2.stat(full);
-      out.push({ path: path3.relative(root, full).split(path3.sep).join("/"), bytes: stat.size });
+      const stat = await fs.stat(full);
+      out.push({ path: path.relative(root, full).split(path.sep).join("/"), bytes: stat.size });
     }
   }
 }
-
-// learning/src/telemetry.js
-import path4 from "node:path";
-var Telemetry = class {
+class Telemetry {
   constructor(stateRoot) {
-    this.file = path4.join(stateRoot, "telemetry.json");
+    this.file = path.join(stateRoot, "telemetry.json");
     this.state = { version: 2, skills: {}, reviews: [] };
     this.queue = Promise.resolve();
   }
@@ -736,15 +743,14 @@ var Telemetry = class {
     this.queue = this.queue.then(() => writeJson(this.file, this.state));
     return this.queue;
   }
-};
+}
 
-// learning/src/mailbox.js
-var InternalMailbox = class {
+class InternalMailbox {
   constructor() {
-    this.internal = /* @__PURE__ */ new Map();
-    this.waiters = /* @__PURE__ */ new Map();
-    this.early = /* @__PURE__ */ new Map();
-    this.submitted = /* @__PURE__ */ new Set();
+    this.internal = new Map();
+    this.waiters = new Map();
+    this.early = new Map();
+    this.submitted = new Set();
   }
   register(sessionID, kind) {
     this.internal.set(sessionID, kind);
@@ -807,20 +813,19 @@ var InternalMailbox = class {
       });
     });
   }
-};
-
-// learning/src/event-bus.js
-var TERMINAL_EVENTS = /* @__PURE__ */ new Set([
+}
+const TERMINAL_EVENTS = new Set([
   "session.execution.succeeded",
   "session.execution.failed",
   "session.execution.interrupted"
 ]);
-var EventBus = class {
+
+class EventBus {
   constructor(ctx) {
     this.ctx = ctx;
-    this.listeners = /* @__PURE__ */ new Set();
-    this.controller = void 0;
-    this.task = void 0;
+    this.listeners = new Set();
+    this.controller = undefined;
+    this.task = undefined;
     this.disposed = false;
   }
   start() {
@@ -855,14 +860,15 @@ var EventBus = class {
       }
       if (!this.disposed) await delay(1e3, this.controller.signal);
     }
-    this.task = void 0;
+    this.task = undefined;
   }
   async dispose() {
     this.disposed = true;
     this.controller?.abort();
     await this.task;
   }
-};
+}
+
 function delay(ms, signal) {
   return new Promise((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -874,62 +880,36 @@ function delay(ms, signal) {
   });
 }
 
-// learning/src/opencode-adapter.js
-var OpenCodeAdapter = class {
-  constructor(ctx) {
-    this.ctx = ctx;
-    this.events = new EventBus(ctx);
-  }
-  start() {
-    this.events.start();
-  }
-  onExecutionTerminal(listener) {
-    return this.events.onTerminal(listener);
-  }
-  async createInternalSession({ directory, agent, title, model }) {
-    const input = { title, agent, location: { directory } };
-    if (model?.id && model?.providerID) input.model = model;
-    return this.ctx.session.create(input);
-  }
-  async prompt(sessionID, text) {
-    return this.ctx.session.prompt({ sessionID, text, delivery: "queue", resume: true });
-  }
-  async getSession(sessionID) {
-    return this.ctx.session.get({ sessionID });
-  }
-  async interrupt(sessionID) {
-    if (typeof this.ctx.session.interrupt !== "function") return;
-    try {
-      await this.ctx.session.interrupt({ sessionID });
-    } catch {
-    }
-  }
-  async notify(sessionID, text) {
-    if (typeof this.ctx.session.synthetic !== "function") return;
-    try {
-      await this.ctx.session.synthetic({
-        sessionID,
-        text,
-        description: "opencode-learning",
-        metadata: { source: "opencode-learning" },
-        delivery: "queue",
-        resume: false
-      });
-    } catch {
-    }
-  }
-  async reloadSkills() {
-    return this.ctx.skill.reload();
-  }
-  async listSkills() {
-    return (await this.ctx.skill.list()).data;
-  }
-  async dispose() {
-    await this.events.dispose();
-  }
-};
+async function createReviewSession(ctx, { directory, agent, title, model }) {
+  const input = { title, agent, location: { directory } };
+  if (model?.id && model?.providerID) input.model = model;
+  return ctx.session.create(input);
+}
 
-// learning/src/scoring.js
+async function promptSession(ctx, sessionID, text) {
+  return ctx.session.prompt({ sessionID, text, delivery: "queue", resume: true });
+}
+
+async function interruptSession(ctx, sessionID) {
+  try {
+    await ctx.session.interrupt({ sessionID });
+  } catch {
+  }
+}
+
+async function notifySession(ctx, sessionID, text) {
+  try {
+    await ctx.session.synthetic({
+      sessionID,
+      text,
+      description: "opencode-learning",
+      metadata: { source: "opencode-learning" },
+      delivery: "queue",
+      resume: false
+    });
+  } catch {
+  }
+}
 function scoreExperience(exp) {
   const tools = exp.toolCalls?.length ?? 0;
   const failed = exp.toolCalls?.filter((x) => x.status === "error").length ?? 0;
@@ -942,14 +922,15 @@ function scoreExperience(exp) {
     reasons: { tools, failed, recovered, corrections, skills, verification }
   };
 }
+
 function isReviewCandidate(exp, threshold) {
   return scoreExperience(exp).score >= threshold;
 }
 
-// learning/src/retriever.js
 function tokens(text) {
   return new Set(String(text).toLowerCase().match(/[a-z0-9][a-z0-9._-]{2,}/g) ?? []);
 }
+
 function overlapScore(a, b) {
   const A = tokens(a);
   const B = tokens(b);
@@ -958,13 +939,13 @@ function overlapScore(a, b) {
   for (const item of A) if (B.has(item)) hits++;
   return hits / Math.sqrt(A.size * B.size);
 }
-async function retrieveCandidates({ exp, adapter, store, maxCandidates = 5 }) {
+
+async function retrieveCandidates({ ctx, exp, store, maxCandidates = 5 }) {
   let catalog = [];
   try {
-    catalog = await adapter.listSkills() ?? [];
+    catalog = (await ctx.skill.list()).data ?? [];
   } catch {
   }
-  if (!Array.isArray(catalog)) catalog = catalog?.skills ?? [];
   const query = [
     exp.goal,
     ...(exp.contextTail ?? []).map((x) => x.text ?? x),
@@ -972,11 +953,11 @@ async function retrieveCandidates({ exp, adapter, store, maxCandidates = 5 }) {
   ].join("\n");
   const used = new Set(exp.skillsUsed ?? []);
   const ranked = catalog.map((skill) => {
-    const id = skill.id ?? skill.skillID ?? skill.name ?? "";
+    const id = skill.id;
     const description = skill.description ?? "";
     return {
       id,
-      name: skill.name ?? id,
+      name: skill.name,
       description,
       score: overlapScore(query, `${id} ${description}`) + (used.has(id) ? 1 : 0)
     };
@@ -996,7 +977,6 @@ async function retrieveCandidates({ exp, adapter, store, maxCandidates = 5 }) {
   return ranked;
 }
 
-// learning/src/reviewer.js
 function trajectoryPayload(exp) {
   return {
     goal: trimText(exp.goal, 2500),
@@ -1008,6 +988,7 @@ function trajectoryPayload(exp) {
     toolCalls: exp.toolCalls?.slice(-50)
   };
 }
+
 function candidatesPayload(candidates) {
   return candidates.map((x) => ({
     id: x.id,
@@ -1017,9 +998,10 @@ function candidatesPayload(candidates) {
     scope: x.scope,
     sha256: x.sha256,
     supportingFiles: x.supportingFiles,
-    body: x.owned ? trimText(x.body, 14e3) : void 0
+    body: x.owned ? trimText(x.body, 14e3) : undefined
   }));
 }
+
 function buildReviewPrompt({ exp, candidates }) {
   return `Review the completed experience below for durable procedural knowledge.
 
@@ -1039,6 +1021,7 @@ ${JSON.stringify(candidatesPayload(candidates), null, 2)}
 
 Submit exactly one proposal through learning_submit_proposal. Create and patch decisions must include skillId as lowercase kebab-case with 1-64 characters. For a create, supporting files may be supplied as skill.files. For a patch, addFiles may create new supporting files but must never overwrite an existing supporting file. Do not edit files directly.`;
 }
+
 function buildValidationPrompt({ exp, candidates, proposal, deterministicValidation }) {
   return `Independently validate this proposed learned-skill change against the evidence.
 
@@ -1068,13 +1051,11 @@ ${JSON.stringify(deterministicValidation, null, 2)}
 
 Call learning_submit_validation exactly once. Reject unsupported generalization.`;
 }
-
-// learning/src/review-pipeline.js
-var ReviewPipeline = class {
-  constructor({ adapter, recorder, store, telemetry, mailbox, config }) {
-    Object.assign(this, { adapter, recorder, store, telemetry, mailbox, config });
-    this.inFlight = /* @__PURE__ */ new Set();
-    this.forced = /* @__PURE__ */ new Set();
+class ReviewPipeline {
+  constructor({ ctx, recorder, store, telemetry, mailbox, config }) {
+    Object.assign(this, { ctx, recorder, store, telemetry, mailbox, config });
+    this.inFlight = new Set();
+    this.forced = new Set();
     this.disposed = false;
   }
   schedule(sessionID, { force = false } = {}) {
@@ -1101,12 +1082,12 @@ var ReviewPipeline = class {
         shouldClear = true;
         return { status: "below-threshold", score };
       }
-      const parent = await this.adapter.getSession(sessionID);
+      const parent = await this.ctx.session.get({ sessionID });
       const directory = parent?.location?.directory ?? this.store.projectRoot;
       const model = parent?.model;
       const candidates = await retrieveCandidates({
+        ctx: this.ctx,
         exp,
-        adapter: this.adapter,
         store: this.store,
         maxCandidates: this.config.maxCandidates
       });
@@ -1129,25 +1110,25 @@ var ReviewPipeline = class {
       await this.telemetry.recordReview({ sessionID, score, decision: proposal?.decision, skillId: proposal?.skillId, validation });
       shouldClear = true;
       if (!validation.ok || proposal.decision === "none") {
-        if (this.config.notify && force) await this.adapter.notify(sessionID, `[opencode-learning] Review completed with no applied change: ${summarizeNoChange(proposal, validation)}`);
+        if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Review completed with no applied change: ${summarizeNoChange(proposal, validation)}`);
         return { status: "no-change", proposal, validation, score };
       }
       if (this.config.mode === "suggest") {
         const staged = await this.store.stage(proposal, validation);
-        if (this.config.notify) await this.adapter.notify(sessionID, `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`);
+        if (this.config.notify) await notifySession(this.ctx, sessionID, `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`);
         return { status: "staged", staged, proposal, validation, score };
       }
       const applied = proposal.decision === "create" ? await this.store.create(proposal, { scope: proposal.scope }) : await this.store.patch(proposal, { scope: proposal.scope });
       if (proposal.decision === "create") await this.telemetry.recordCreated(proposal.skillId);
       else await this.telemetry.recordPatched(proposal.skillId);
-      await this.adapter.reloadSkills();
-      if (this.config.notify) await this.adapter.notify(sessionID, `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`);
+      await this.ctx.skill.reload();
+      if (this.config.notify) await notifySession(this.ctx, sessionID, `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`);
       return { status: "applied", applied, proposal, validation, score };
     } catch (error) {
       if (this.disposed) return { status: "disposed" };
       await this.telemetry.recordReview({ sessionID, score, decision: "error", error: redactError(error) }).catch(() => {
       });
-      if (this.config.notify && force) await this.adapter.notify(sessionID, `[opencode-learning] Review failed: ${redactError(error)}`);
+      if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Review failed: ${redactError(error)}`);
       throw error;
     } finally {
       this.inFlight.delete(sessionID);
@@ -1155,7 +1136,7 @@ var ReviewPipeline = class {
     }
   }
   async runReflector({ directory, model, exp, candidates }) {
-    const session = await this.adapter.createInternalSession({
+    const session = await createReviewSession(this.ctx, {
       directory,
       model,
       agent: this.config.reflectorAgent,
@@ -1166,17 +1147,17 @@ var ReviewPipeline = class {
     this.mailbox.register(id, "proposal");
     try {
       const callback = this.mailbox.wait(id, this.config.reviewerTimeoutMs);
-      await this.adapter.prompt(id, buildReviewPrompt({ exp, candidates }));
+      await promptSession(this.ctx, id, buildReviewPrompt({ exp, candidates }));
       const proposal = await callback;
       if (!this.mailbox.hasSubmitted(id)) throw new Error("reflector finished without submitting a proposal");
       return proposal;
     } finally {
       this.mailbox.release(id);
-      await this.adapter.interrupt(id);
+      await interruptSession(this.ctx, id);
     }
   }
   async runValidator({ directory, model, exp, candidates, proposal, deterministic }) {
-    const session = await this.adapter.createInternalSession({
+    const session = await createReviewSession(this.ctx, {
       directory,
       model,
       agent: this.config.validatorAgent,
@@ -1187,44 +1168,42 @@ var ReviewPipeline = class {
     this.mailbox.register(id, "validation");
     try {
       const callback = this.mailbox.wait(id, this.config.reviewerTimeoutMs);
-      await this.adapter.prompt(id, buildValidationPrompt({ exp, candidates, proposal, deterministicValidation: deterministic }));
+      await promptSession(this.ctx, id, buildValidationPrompt({ exp, candidates, proposal, deterministicValidation: deterministic }));
       const validation = await callback;
       if (!this.mailbox.hasSubmitted(id)) throw new Error("validator finished without submitting a validation");
       return validation;
     } finally {
       this.mailbox.release(id);
-      await this.adapter.interrupt(id);
+      await interruptSession(this.ctx, id);
     }
   }
   async cleanup() {
     this.disposed = true;
     this.forced.clear();
   }
-};
+}
+
 function summarizeNoChange(proposal, validation) {
   if (proposal?.decision === "none") return proposal.reason || "nothing durable was found";
   if (!validation?.deterministic?.ok) return validation.deterministic.errors.join("; ");
   if (validation?.agent?.decision === "reject") return validation.agent.reason;
   return "no durable change";
 }
-
-// learning/src/curator.js
-import path5 from "node:path";
-var Curator = class {
+class Curator {
   constructor({ config, store, telemetry }) {
     this.config = config;
     this.store = store;
     this.telemetry = telemetry;
-    this.stateFile = path5.join(store.stateRoot, "curator.json");
+    this.stateFile = path.join(store.stateRoot, "curator.json");
   }
   async maybeRun({ force = false } = {}) {
     if (!this.config.curator.enabled) return { skipped: "disabled" };
     const state = await readJson(this.stateFile, { lastRunAt: 0 });
     const hours = (Date.now() - state.lastRunAt) / 36e5;
     if (!force && state.lastRunAt && hours < this.config.curator.checkEveryHours) return { skipped: "interval" };
-    const result2 = await this.run();
-    await writeJson(this.stateFile, { lastRunAt: Date.now(), result: result2 });
-    return result2;
+    const result = await this.run();
+    await writeJson(this.stateFile, { lastRunAt: Date.now(), result });
+    return result;
   }
   async run() {
     const archived = [];
@@ -1249,35 +1228,39 @@ var Curator = class {
     await this.telemetry.flush();
     return { stale, archived };
   }
-};
-
-// learning/src/index.js
-var index_default = Plugin.define({
+}
+export default Plugin.define({
   id: "learning.skills",
   setup: async (ctx) => {
     const config = loadConfig(ctx.options);
     if (!config.enabled) return;
+
     const mailbox = new InternalMailbox();
-    const adapter = new OpenCodeAdapter(ctx);
-    const runtimes = /* @__PURE__ */ new Map();
-    const sessionDirectories = /* @__PURE__ */ new Map();
+    const eventBus = new EventBus(ctx);
+    const runtimes = new Map();
+    const sessionDirectories = new Map();
+
     const runtimeForSession = async (sessionID) => {
-      const session = await adapter.getSession(sessionID);
+      const session = await ctx.session.get({ sessionID });
       let directory = session?.location?.directory;
       if (!directory) throw new Error(`session ${sessionID} has no project directory`);
       directory = await canonicalDirectory(directory);
       sessionDirectories.set(sessionID, directory);
       let runtime = runtimes.get(directory);
       if (!runtime) {
-        runtime = createRuntime({ directory, config, adapter, mailbox });
+        runtime = createRuntime({ ctx, directory, config, mailbox });
         runtimes.set(directory, runtime);
       }
       await runtime.ready;
       return runtime;
     };
-    await registerTools(ctx, { config, mailbox, adapter, runtimeForSession });
-    adapter.start();
-    const removeTerminalListener = adapter.onExecutionTerminal((event) => {
+
+    await registerAgents(ctx, config);
+    await registerTools(ctx, { config, mailbox, runtimeForSession });
+    await registerCommands(ctx);
+
+    eventBus.start();
+    const removeTerminalListener = eventBus.onTerminal((event) => {
       const eventDirectory = event.location?.directory ?? sessionDirectories.get(event.sessionID);
       if (!eventDirectory) return;
       void canonicalDirectory(eventDirectory).then(async (directory) => {
@@ -1288,6 +1271,7 @@ var index_default = Plugin.define({
         runtime.pipeline.executionFinished(event.sessionID);
       }).catch((error) => console.error("[opencode-learning] terminal event routing failed", error));
     });
+
     await ctx.session.hook("context", async (event) => {
       if (!event?.sessionID || mailbox.isInternalSession(event.sessionID)) return;
       const runtime = await runtimeForSession(event.sessionID);
@@ -1304,10 +1288,11 @@ var index_default = Plugin.define({
       const exp = runtime.recorder.toolAfter(event);
       if (!exp) return;
       if (event.tool === "skill") {
-        const skillId = typeof event.input === "object" ? event.input?.name ?? event.input?.id ?? event.input?.skill : void 0;
+        const skillId = typeof event.input === "object" ? event.input?.name ?? event.input?.id ?? event.input?.skill : undefined;
         if (typeof skillId === "string") void runtime.telemetry.recordUse(skillId).catch(console.error);
       }
     });
+
     const curatorTimer = setInterval(
       () => {
         for (const runtime of runtimes.values()) {
@@ -1317,16 +1302,18 @@ var index_default = Plugin.define({
       Math.max(1, config.curator.checkEveryHours) * 36e5
     );
     curatorTimer.unref?.();
+
     return async () => {
       clearInterval(curatorTimer);
       removeTerminalListener();
       await Promise.allSettled([...runtimes.values()].map((runtime) => runtime.ready.then(() => runtime.pipeline?.cleanup())));
-      await Promise.allSettled(mailbox.sessionIDs().map((id) => adapter.interrupt(id)));
-      await adapter.dispose();
+      await Promise.allSettled(mailbox.sessionIDs().map((id) => interruptSession(ctx, id)));
+      await eventBus.dispose();
     };
   }
 });
-function createRuntime({ directory, config, adapter, mailbox }) {
+
+function createRuntime({ ctx, directory, config, mailbox }) {
   const store = new SkillStore({
     projectRoot: directory,
     projectSkillDir: config.projectSkillDir,
@@ -1338,21 +1325,23 @@ function createRuntime({ directory, config, adapter, mailbox }) {
   runtime.ready = new Telemetry(store.stateRoot).load().then((telemetry) => {
     runtime.telemetry = telemetry;
     runtime.curator = new Curator({ config, store, telemetry });
-    runtime.pipeline = new ReviewPipeline({ adapter, recorder, store, telemetry, mailbox, config });
+    runtime.pipeline = new ReviewPipeline({ ctx, recorder, store, telemetry, mailbox, config });
     void runtime.curator.maybeRun().catch((error) => console.error("[opencode-learning] curator failed", error));
     return runtime;
   });
   return runtime;
 }
+
 async function canonicalDirectory(directory) {
-  const resolved = path6.resolve(directory);
+  const resolved = path.resolve(directory);
   try {
-    return await fs3.realpath(resolved);
+    return await fs.realpath(resolved);
   } catch {
     return resolved;
   }
 }
-async function registerTools(ctx, { config, mailbox, adapter, runtimeForSession }) {
+
+async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
   await ctx.tool.transform((tools) => {
     const add = (name, info, options) => tools.add({ ...info, name, options });
     add("submit_proposal", {
@@ -1431,7 +1420,7 @@ async function registerTools(ctx, { config, mailbox, adapter, runtimeForSession 
           if (applied.proposal.decision === "create") await telemetry.recordCreated(skillId);
           if (applied.proposal.decision === "patch") await telemetry.recordPatched(skillId);
         }
-        await adapter.reloadSkills();
+        await ctx.skill.reload();
         return result({ applied: id, skillId, result: applied.result, reloaded: true }, `Applied ${id} to ${skillId} and reloaded skills.`);
       }
     }, { namespace: "learning", codemode: false });
@@ -1447,7 +1436,7 @@ async function registerTools(ctx, { config, mailbox, adapter, runtimeForSession 
       execute: async ({ skillId }, toolCtx) => {
         const { store } = await runtimeForSession(toolCtx.sessionID);
         const promoted = await store.promote(skillId);
-        await adapter.reloadSkills();
+        await ctx.skill.reload();
         return result({ ...promoted, reloaded: true }, `Promoted ${skillId} to global skills and reloaded the skill registry.`);
       }
     }, { namespace: "learning", codemode: false });
@@ -1492,47 +1481,189 @@ async function registerTools(ctx, { config, mailbox, adapter, runtimeForSession 
       execute: async ({ force = false }, toolCtx) => {
         const { curator } = await runtimeForSession(toolCtx.sessionID);
         const output = await curator.maybeRun({ force });
-        if (output.archived?.length) await adapter.reloadSkills();
+        if (output.archived?.length) await ctx.skill.reload();
         return result(output, JSON.stringify(output, null, 2));
       }
     }, { namespace: "learning", codemode: false });
   });
 }
+
+const REFLECTOR_SYSTEM = `You are the procedural-learning reflector for OpenCode.
+
+Your task is not to summarize a session. Decide whether the supplied completed experience contains durable procedural knowledge worth reusing in future coding sessions.
+
+## Worth learning
+
+Prefer lessons supported by concrete trajectory evidence:
+
+- a user correction that changes how a task should be done in future;
+- a non-obvious failure followed by a verified recovery;
+- a reusable multi-step workflow discovered during the task;
+- a verification sequence that prevented or caught a likely mistake;
+- an existing learned skill that proved incomplete, too broad, or wrong.
+
+Do not persist:
+
+- unexplained or one-off failures;
+- temporary paths, timestamps, process IDs, ephemeral ports, generated IDs, usernames, or machine-specific values;
+- credentials, secrets, tokens, private keys, cookies, or authentication material;
+- speculation unsupported by the completed trajectory;
+- facts that belong in project instructions rather than a reusable procedure;
+- a narrow new skill when an existing agent-owned skill can be improved.
+
+## Decision order
+
+1. If an agent-owned skill was used and evidence shows it should change, patch it.
+2. Otherwise prefer patching a relevant agent-owned umbrella skill.
+3. Create a new skill only when the procedure is reusable and no owned candidate fits.
+4. Otherwise submit \`decision=none\`.
+
+Every create or patch proposal must include \`skillId\`. Use lowercase kebab-case with 1-64 characters, for example \`validated-config-loader\`. A display name in \`skill.name\` does not replace \`skillId\`.
+
+You may patch only candidate skills marked \`owned=true\`. For a patch, copy the supplied SHA-256 exactly into \`expectedSha256\`; never invent current skill content.
+
+Use section-level operations only:
+
+- \`replace_section\`: replace an existing \`## Heading\`, or create it if absent.
+- \`append_section\`: append a new \`## Heading\`.
+
+For a new skill, \`skill.files\` may add supporting scripts, references, or templates. For a patch, \`addFiles\` may add new supporting files only. Never overwrite or remove an existing supporting file; if existing support material is wrong, patch the SKILL.md procedure to compensate and leave a human-review note in the proposal reason.
+
+Keep generated skills operational. Prefer these sections when useful: \`When to use\`, \`Preconditions\`, \`Procedure\`, \`Pitfalls\`, and \`Verification\`.
+
+Call \`learning_submit_proposal\` exactly once. Do not call any other tool and do not edit files directly.`;
+
+const VALIDATOR_SYSTEM = `You are the independent validator for OpenCode procedural-learning proposals.
+
+You receive a completed experience, candidate skill context, and one already schema-validated proposal. Your job is to reject proposals that are not adequately supported by the evidence or that generalize too aggressively.
+
+Accept only when all of these are true:
+
+1. The proposed lesson is directly supported by supplied trajectory evidence.
+2. The lesson is reusable beyond the exact run that produced it.
+3. It does not encode secrets, transient IDs, temporary paths, usernames, timestamps, or machine-specific state.
+4. A patch is consistent with the supplied current skill and does not overwrite unrelated procedure.
+5. A create decision is meaningfully distinct from the supplied candidate skills.
+6. The procedure contains a verification step when the trajectory provides one.
+7. The proposal does not turn an unverified failure into a general rule.
+
+Reject if uncertain. Explain the reason briefly.
+
+Call \`learning_submit_validation\` exactly once with \`decision=accept\` or \`decision=reject\`. Do not call any other tool and do not edit files.`;
+
+async function registerAgents(ctx, config) {
+  await ctx.agent.transform((agents) => {
+    agents.update(config.reflectorAgent, (agent) => {
+      agent.description = "Internal reviewer that extracts reusable procedural knowledge from completed sessions";
+      agent.mode = "all";
+      agent.hidden = true;
+      agent.steps = 6;
+      agent.system = REFLECTOR_SYSTEM;
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "learning_submit_proposal", resource: "*", effect: "allow" }
+      ];
+    });
+    agents.update(config.validatorAgent, (agent) => {
+      agent.description = "Internal validator for proposed learned skill changes";
+      agent.mode = "all";
+      agent.hidden = true;
+      agent.steps = 4;
+      agent.system = VALIDATOR_SYSTEM;
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "learning_submit_validation", resource: "*", effect: "allow" }
+      ];
+    });
+  });
+}
+
+const COMMANDS = [
+  {
+    name: "learn",
+    description: "Force a procedural-learning review of this session",
+    template: "Call `learning_request_review` exactly once with `force=true`. Then report that the review is scheduled and that staged changes can be inspected with `/learn-pending`."
+  },
+  {
+    name: "learn-pending",
+    description: "List staged learned-skill proposals",
+    template: "Call `learning_pending` with `action=list`. Summarize the returned proposal IDs, target skills, decisions, confidence, and reasons. Do not apply anything."
+  },
+  {
+    name: "learn-show",
+    description: "Inspect one staged learned-skill proposal",
+    template: "Call `learning_pending` with `action=show` and `id=$1`. Show the proposal, validation result, and before/after preview without applying it."
+  },
+  {
+    name: "learn-approve",
+    description: "Apply one staged learned-skill proposal",
+    template: "Call `learning_pending` with `action=apply` and `id=$1`. Report exactly which skill was created or patched and whether the skill registry reloaded successfully."
+  },
+  {
+    name: "learn-reject",
+    description: "Reject one staged learned-skill proposal",
+    template: "Call `learning_pending` with `action=reject` and `id=$1`. Report the rejected proposal ID."
+  },
+  {
+    name: "learn-status",
+    description: "Show procedural-learning configuration and telemetry",
+    template: "Call `learning_status` and summarize whether automatic learning is enabled, the current mode and thresholds, pending proposal count, owned learned skills, and recent review outcomes."
+  },
+  {
+    name: "learn-curate",
+    description: "Run learned-skill stale/archive curation now",
+    template: "Call `learning_curate` with `force=true`. Report skills marked stale and skills archived. Do not delete anything permanently."
+  },
+  {
+    name: "learn-promote",
+    description: "Promote one owned project skill to the global skill registry",
+    template: "Call `learning_promote` with `skillId=$1`. This is an explicit cross-project publication action. Report the project source and global destination, or the exact reason promotion was refused."
+  }
+];
+
+async function registerCommands(ctx) {
+  await ctx.command.transform((commands) => {
+    for (const { name, description, template } of COMMANDS) {
+      commands.update(name, (command) => {
+        command.description = description;
+        command.template = template;
+      });
+    }
+  });
+}
+
 function enforceAgent(toolCtx, expected, kind) {
   if (toolCtx?.agent !== expected) throw new Error(`learning.submit_${kind} is restricted to ${expected}`);
 }
+
 async function componentStatus(ctx, config) {
   const out = { reflectorAgent: false, validatorAgent: false, commands: {} };
   try {
-    const agentsRaw = await ctx.agent.list();
-    const agents = unwrapList(agentsRaw);
-    const ids = new Set(agents.map((x) => x.id ?? x.name));
+    const agents = (await ctx.agent.list()).data;
+    const ids = new Set(agents.map((x) => x.id));
     out.reflectorAgent = ids.has(config.reflectorAgent);
     out.validatorAgent = ids.has(config.validatorAgent);
   } catch {
   }
   try {
-    const commandsRaw = await ctx.command.list();
-    const commands = unwrapList(commandsRaw);
-    const ids = new Set(commands.map((x) => x.id ?? x.name ?? x.command));
+    const commands = (await ctx.command.list()).data;
+    const ids = new Set(commands.map((x) => x.name));
     for (const id of ["learn", "learn-pending", "learn-show", "learn-approve", "learn-reject", "learn-status", "learn-curate", "learn-promote"]) out.commands[id] = ids.has(id);
   } catch {
   }
   return out;
 }
-function unwrapList(value) {
-  if (Array.isArray(value)) return value;
-  if (Array.isArray(value?.data)) return value.data;
-  return [];
-}
+
 function objectOutput() {
   return { type: "object", additionalProperties: true };
 }
+
 function result(output, content) {
   return { output: sanitize(output), content };
 }
+
 function sanitize(value) {
-  if (value === void 0 || value === null) return null;
+  if (value === undefined || value === null) return null;
   if (Array.isArray(value)) return value.map(sanitize);
   if (typeof value === "object") {
     const out = {};
@@ -1541,9 +1672,7 @@ function sanitize(value) {
   }
   return value;
 }
+
 function isLearningTool(name) {
   return typeof name === "string" && (name.startsWith("learning.") || name.startsWith("learning_"));
 }
-export {
-  index_default as default
-};
