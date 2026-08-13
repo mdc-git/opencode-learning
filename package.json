@@ -1,0 +1,13 @@
+{
+  "name": "opencode-learning",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./plugins/opencode-learning/index.ts",
+  "dependencies": {
+    "@opencode-ai/plugin": "next"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mdc-git/opencode-learning.git"
+  }
+}
