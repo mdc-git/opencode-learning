@@ -78,7 +78,6 @@ changes before accepting or rejecting them.
 ## Requirements
 
 - OpenCode V2
-- Node.js and npm on `PATH`
 
 ## Install
 
