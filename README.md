@@ -83,6 +83,50 @@ changes before accepting or rejecting them.
 
 ## Install
 
+### From git (recommended)
+
+Add the plugin to your `opencode.json(c)` and let OpenCode install it
+automatically. No manual cloning or dependency management is needed.
+
+For global use, edit `~/.config/opencode/opencode.json(c)`. For a single
+project, edit `<project>/.opencode/opencode.json(c)` or
+`<project>/opencode.json(c)`:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
+    { "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
+    { "action": "learning_promote", "resource": "*", "effect": "ask" }
+  ],
+  "plugins": [
+    {
+      "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git",
+      "options": {
+        "mode": "suggest",
+        "scoreThreshold": 10,
+        "confidenceThreshold": 0.72,
+        "agentValidation": true,
+        "notify": true
+      }
+    }
+  ]
+}
+```
+
+Restart the service after adding the entry:
+
+```sh
+opencode2 service restart
+```
+
+OpenCode fetches the repository, resolves `@opencode-ai/plugin` and other
+declared dependencies into an isolated cache, and loads the plugin. See
+[Verify](#verify) below to confirm it loaded.
+
+### Manual
+
 Clone the repository and enter it:
 
 ```sh
@@ -138,10 +182,11 @@ The resulting layout is:
 `-- node_modules/
 ```
 
-## Configure
+### Configure (manual install only)
 
 Merge the following into `<target>/opencode.json` or
-`<target>/opencode.jsonc`. Keep unrelated settings.
+`<target>/opencode.jsonc`. Keep unrelated settings. Skip this if you used the
+git URL method above — the config is already included there.
 
 ```jsonc
 {
