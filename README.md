@@ -3,6 +3,9 @@
 This OpenCode V2 plugin extracts reusable procedures from completed sessions
 and stores them as native OpenCode skills.
 
+<!-- markdownlint-disable-next-line MD033 -->
+<video controls src="https://github.com/user-attachments/assets/e323399e-8978-4eab-b73b-1d0c442c5cd8"></video>
+
 Install it globally to use it in every project, or install it under one
 project's `.opencode` directory. Runtime state and learned skills remain local
 to each project in both cases.
