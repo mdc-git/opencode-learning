@@ -79,14 +79,11 @@ changes before accepting or rejecting them.
 
 - OpenCode V2
 - Node.js and npm on `PATH`
-- `@opencode-ai/plugin@next` installed under the selected OpenCode config root
 
 ## Install
 
-### From git (recommended)
-
 Add the plugin to your `opencode.json(c)` and let OpenCode install it
-automatically. No manual cloning or dependency management is needed.
+automatically from git. No manual cloning or dependency management is needed.
 
 For global use, edit `~/.config/opencode/opencode.json(c)`. For a single
 project, edit `<project>/.opencode/opencode.json(c)` or
@@ -103,102 +100,6 @@ project, edit `<project>/.opencode/opencode.json(c)` or
   "plugins": [
     {
       "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git",
-      "options": {
-        "mode": "suggest",
-        "scoreThreshold": 10,
-        "confidenceThreshold": 0.72,
-        "agentValidation": true,
-        "notify": true
-      }
-    }
-  ]
-}
-```
-
-Restart the service after adding the entry:
-
-```sh
-opencode2 service restart
-```
-
-OpenCode fetches the repository, resolves `@opencode-ai/plugin` and other
-declared dependencies into an isolated cache, and loads the plugin. See
-[Verify](#verify) below to confirm it loaded.
-
-### Manual
-
-Clone the repository and enter it:
-
-```sh
-git clone https://github.com/mdc-git/opencode-learning.git
-cd opencode-learning
-```
-
-Choose one installation scope before continuing.
-
-### Global
-
-Use this option to load the plugin, agents, and commands in every OpenCode
-project for the current user:
-
-```sh
-TARGET="$HOME/.config/opencode"
-```
-
-### Project-local
-
-Use this option to load the plugin, agents, and commands only in one project.
-Replace `/path/to/project` with that project's root directory:
-
-```sh
-TARGET="/path/to/project/.opencode"
-```
-
-The remaining installation steps are identical for both scopes and use the
-selected `TARGET` value.
-
-Back up an existing target before replacing files with the same names:
-
-```sh
-if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
-```
-
-Install the plugin and dependency:
-
-```sh
-mkdir -p "$TARGET/plugins/opencode-learning"
-cp plugins/opencode-learning/index.ts "$TARGET/plugins/opencode-learning/"
-cd "$TARGET"
-npm install @opencode-ai/plugin@next
-```
-
-The resulting layout is:
-
-```text
-<target>/
-|-- plugins/
-|   `-- opencode-learning/
-|       `-- index.ts
-`-- node_modules/
-```
-
-### Configure (manual install only)
-
-Merge the following into `<target>/opencode.json` or
-`<target>/opencode.jsonc`. Keep unrelated settings. Skip this if you used the
-git URL method above — the config is already included there.
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "permissions": [
-    { "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
-    { "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
-    { "action": "learning_promote", "resource": "*", "effect": "ask" }
-  ],
-  "plugins": [
-    {
-      "package": "./plugins/opencode-learning/index.ts",
       "options": {
         "mode": "suggest",
         "scoreThreshold": 10,
@@ -223,6 +124,27 @@ git URL method above — the config is already included there.
 
 The two deny rules reserve the structured callback tools for the hidden
 reflector and validator agents. Global promotion requires confirmation.
+
+Restart the service after adding the entry:
+
+```sh
+opencode2 service restart
+```
+
+OpenCode fetches the repository, resolves `@opencode-ai/plugin` and other
+declared dependencies into an isolated cache, and loads the plugin. See
+[Verify](#verify) below to confirm it loaded.
+
+> [!NOTE]
+> If the plugin fails to load with an `NpmInstallFailedError` about a missing
+> `package.json`, a stale npm or OpenCode package cache may be referencing a
+> prior failed clone. Clear both caches and restart:
+>
+> ```sh
+> rm -rf ~/.cache/opencode/packages/opencode-learning@git+https:*
+> npm cache clean --force
+> opencode2 service restart
+> ```
 
 ## Verify
 
@@ -366,12 +288,10 @@ skill.
 
 ## Remove
 
-Set `TARGET` to the same global or project-local directory used during
-installation. Remove the plugin path and three learning permission rules from
-`$TARGET/opencode.json(c)`, then remove the installed files:
+Remove the plugin entry and three learning permission rules from your
+`opencode.json(c)`, then restart:
 
 ```sh
-rm -r "$TARGET/plugins/opencode-learning"
 opencode2 service restart
 ```
 
