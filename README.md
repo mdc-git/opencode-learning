@@ -116,12 +116,10 @@ Back up an existing target before replacing files with the same names:
 if [ -d "$TARGET" ]; then cp -a "$TARGET" "$TARGET.backup"; fi
 ```
 
-Install the plugin, agents, commands, and dependency:
+Install the plugin and dependency:
 
 ```sh
-mkdir -p "$TARGET/agents" "$TARGET/commands" "$TARGET/plugins/opencode-learning"
-cp agents/*.md "$TARGET/agents/"
-cp commands/*.md "$TARGET/commands/"
+mkdir -p "$TARGET/plugins/opencode-learning"
 cp plugins/opencode-learning/index.ts "$TARGET/plugins/opencode-learning/"
 cd "$TARGET"
 npm install @opencode-ai/plugin@next
@@ -131,11 +129,6 @@ The resulting layout is:
 
 ```text
 <target>/
-|-- agents/
-|   |-- learning-reflector.md
-|   `-- learning-validator.md
-|-- commands/
-|   `-- learn*.md
 |-- plugins/
 |   `-- opencode-learning/
 |       `-- index.ts
@@ -331,9 +324,6 @@ installation. Remove the plugin path and three learning permission rules from
 
 ```sh
 rm -r "$TARGET/plugins/opencode-learning"
-rm "$TARGET/agents/learning-reflector.md"
-rm "$TARGET/agents/learning-validator.md"
-rm "$TARGET"/commands/learn*.md
 opencode2 service restart
 ```
 
