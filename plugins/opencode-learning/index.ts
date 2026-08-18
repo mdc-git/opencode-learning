@@ -440,7 +440,7 @@ class SkillStore {
   renderCreated(proposal) {
     const { skill } = proposal;
     return `---
-name: ${yamlScalar(skill.name)}
+name: ${yamlScalar(proposal.skillId)}
 description: ${yamlScalar(skill.description)}
 metadata:
   opencode/slash: "false"
