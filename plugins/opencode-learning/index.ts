@@ -1553,6 +1553,14 @@ Call \`learning_submit_validation\` exactly once with \`decision=accept\` or \`d
 
 async function registerAgents(ctx, config) {
   await ctx.agent.transform((agents) => {
+    for (const current of agents.list()) {
+      agents.update(current.id, (agent) => {
+        agent.permissions.push(
+          { action: "learning_submit_proposal", resource: "*", effect: "deny" },
+          { action: "learning_submit_validation", resource: "*", effect: "deny" }
+        );
+      });
+    }
     agents.update(config.reflectorAgent, (agent) => {
       agent.description = "Internal reviewer that extracts reusable procedural knowledge from completed sessions";
       agent.mode = "all";

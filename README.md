@@ -92,8 +92,6 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 {
   "$schema": "https://opencode.ai/config.json",
   "permissions": [
-    { "action": "learning_submit_proposal", "resource": "*", "effect": "deny" },
-    { "action": "learning_submit_validation", "resource": "*", "effect": "deny" },
     { "action": "learning_promote", "resource": "*", "effect": "ask" }
   ],
   "plugins": [
@@ -121,8 +119,10 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 }
 ```
 
-The two deny rules reserve the structured callback tools for the hidden
-reflector and validator agents. Global promotion requires confirmation.
+The plugin denies the callback tools to every configured agent, then allows
+each callback only for its matching hidden agent. Do not add global deny rules
+for these callbacks, because V2 global denies also block the matching agent.
+Global promotion requires confirmation.
 
 Restart the service after adding the entry:
 
