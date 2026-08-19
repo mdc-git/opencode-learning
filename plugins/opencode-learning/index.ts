@@ -1115,14 +1115,14 @@ class ReviewPipeline {
       }
       if (this.config.mode === "suggest") {
         const staged = await this.store.stage(proposal, validation);
-        if (this.config.notify) await notifySession(this.ctx, sessionID, `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`);
+        if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`);
         return { status: "staged", staged, proposal, validation, score };
       }
       const applied = proposal.decision === "create" ? await this.store.create(proposal, { scope: proposal.scope }) : await this.store.patch(proposal, { scope: proposal.scope });
       if (proposal.decision === "create") await this.telemetry.recordCreated(proposal.skillId);
       else await this.telemetry.recordPatched(proposal.skillId);
       await this.ctx.skill.reload();
-      if (this.config.notify) await notifySession(this.ctx, sessionID, `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`);
+      if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`);
       return { status: "applied", applied, proposal, validation, score };
     } catch (error) {
       if (this.disposed) return { status: "disposed" };
