@@ -274,7 +274,7 @@ skill.
 | `maxCandidates` | `5` | Maximum skill candidates sent to the reflector. |
 | `confidenceThreshold` | `0.72` | Minimum proposal confidence. |
 | `agentValidation` | `true` | Run the hidden validator. |
-| `notify` | `true` | Add synthetic session notices. |
+| `notify` | `true` | Add synthetic session notices for reviews explicitly started with `/learn`; automatic reviews remain silent. |
 | `projectSkillDir` | `.opencode/skills` | Learned-skill path relative to the project root. |
 | `stateDir` | `.opencode/.learning` | Runtime-state path relative to the project root. |
 | `globalSkillDir` | `~/.config/opencode/skills` | Explicit promotion destination. |
