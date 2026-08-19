@@ -1379,11 +1379,11 @@ async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
       }
     }, { namespace: "learning", codemode: false });
     add("pending", {
-      description: "List, inspect, apply, or reject staged learned-skill proposals.",
+      description: "List, inspect, or reject staged learned-skill proposals.",
       input: {
         type: "object",
         properties: {
-          action: { type: "string", enum: ["list", "show", "apply", "reject"] },
+          action: { type: "string", enum: ["list", "show", "reject"] },
           id: { type: "string" }
         },
         required: ["action"],
@@ -1414,6 +1414,20 @@ async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
           await store.rejectPending(id);
           return result({ rejected: id }, `Rejected ${id}.`);
         }
+        throw new Error(`unsupported pending action: ${action}`);
+      }
+    }, { namespace: "learning", codemode: false });
+    add("apply", {
+      description: "Apply one staged learned-skill proposal.",
+      input: {
+        type: "object",
+        properties: { id: { type: "string" } },
+        required: ["id"],
+        additionalProperties: false
+      },
+      output: objectOutput(),
+      execute: async ({ id }, toolCtx) => {
+        const { store, telemetry } = await runtimeForSession(toolCtx.sessionID);
         const applied = await store.applyPending(id);
         const skillId = applied.proposal?.skillId;
         if (typeof skillId === "string" && applied.result?.file) {
@@ -1557,7 +1571,8 @@ async function registerAgents(ctx, config) {
       agents.update(current.id, (agent) => {
         agent.permissions.push(
           { action: "learning_submit_proposal", resource: "*", effect: "deny" },
-          { action: "learning_submit_validation", resource: "*", effect: "deny" }
+          { action: "learning_submit_validation", resource: "*", effect: "deny" },
+          { action: "learning_apply", resource: "*", effect: "ask" }
         );
       });
     }
@@ -1605,7 +1620,7 @@ const COMMANDS = [
   {
     name: "learn-approve",
     description: "Apply one staged learned-skill proposal",
-    template: "Call `learning_pending` with `action=apply` and `id=$1`. Report exactly which skill was created or patched and whether the skill registry reloaded successfully."
+    template: "Call `learning_apply` with `id=$1`. Report exactly which skill was created or patched and whether the skill registry reloaded successfully."
   },
   {
     name: "learn-reject",

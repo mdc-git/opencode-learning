@@ -122,7 +122,8 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 The plugin denies the callback tools to every configured agent, then allows
 each callback only for its matching hidden agent. Do not add global deny rules
 for these callbacks, because V2 global denies also block the matching agent.
-Global promotion requires confirmation.
+It also assigns an `ask` policy to the separate `learning_apply` action. Global
+promotion uses the configured `learning_promote` `ask` rule.
 
 Restart the service after adding the entry:
 
