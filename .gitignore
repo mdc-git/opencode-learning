@@ -1,3 +1,4 @@
 node_modules/
 .learning/
 .opencode/
+package-lock.json
