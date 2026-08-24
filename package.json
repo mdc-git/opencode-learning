@@ -4,10 +4,11 @@
   "type": "module",
   "exports": "./plugins/opencode-learning/index.ts",
   "dependencies": {
-    "@opencode-ai/plugin": "next"
+    "@opencode-ai/plugin": "beta"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mdc-git/opencode-learning.git"
-  }
+  },
+  "//": "Keep @opencode-ai/plugin on the beta dist-tag so this plugin follows the OpenCode beta package family."
 }
