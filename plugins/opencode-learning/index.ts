@@ -1647,9 +1647,19 @@ const COMMANDS = [
 async function registerCommands(ctx) {
   await ctx.command.transform((commands) => {
     for (const { name, description, template } of COMMANDS) {
-      commands.update(name, (command) => {
-        command.description = description;
-        command.template = template;
+      commands.add({
+        name,
+        description,
+        execute: async ({ sessionID, prompt, delivery }) => {
+          await ctx.session.prompt({
+            sessionID,
+            text: template.replaceAll("$1", prompt.text.trim()),
+            files: prompt.files,
+            agents: prompt.agents,
+            skills: prompt.skills,
+            delivery
+          });
+        }
       });
     }
   });
