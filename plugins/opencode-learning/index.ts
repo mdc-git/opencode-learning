@@ -11,6 +11,7 @@ const DEFAULTS = Object.freeze({
   scoreThreshold: 10,
   reviewerTimeoutMs: 12e4,
   maxEventsPerSession: 120,
+  maxAutomaticReviewsPerSession: 1,
   maxCandidates: 5,
   confidenceThreshold: 0.72,
   agentValidation: true,
@@ -30,6 +31,9 @@ const DEFAULTS = Object.freeze({
 
 function loadConfig(options = {}) {
   const mode = ["off", "suggest", "auto"].includes(options.mode) ? options.mode : DEFAULTS.mode;
+  const maxAutomaticReviewsPerSession = Number.isInteger(options.maxAutomaticReviewsPerSession) && options.maxAutomaticReviewsPerSession >= 0
+    ? options.maxAutomaticReviewsPerSession
+    : DEFAULTS.maxAutomaticReviewsPerSession;
   const curator = {
     ...DEFAULTS.curator,
     ...options.curator && typeof options.curator === "object" ? options.curator : {}
@@ -38,6 +42,7 @@ function loadConfig(options = {}) {
     ...DEFAULTS,
     ...options,
     mode,
+    maxAutomaticReviewsPerSession,
     curator,
     enabled: options.enabled !== false && mode !== "off",
     agentValidation: options.agentValidation !== false,
@@ -137,18 +142,21 @@ class ExperienceRecorder {
   constructor({ maxEventsPerSession = 120 } = {}) {
     this.maxEventsPerSession = maxEventsPerSession;
     this.sessions = new Map();
+    this.history = new Map();
     this.pendingTools = new Map();
   }
   get(sessionID) {
     if (!this.sessions.has(sessionID)) {
+      const history = this.history.get(sessionID) ?? { goal: "", seenUserMessages: new Set() };
+      this.history.set(sessionID, history);
       this.sessions.set(sessionID, {
         sessionID,
         startedAt: Date.now(),
         updatedAt: Date.now(),
-        goal: "",
+        goal: history.goal,
         contextTail: [],
         corrections: [],
-        seenUserMessages: new Set(),
+        seenUserMessages: history.seenUserMessages,
         toolCalls: [],
         skillsUsed: new Set(),
         recoveries: 0,
@@ -163,15 +171,26 @@ class ExperienceRecorder {
     const exp = this.get(sessionID);
     exp.updatedAt = Date.now();
     const messages = Array.isArray(event.messages) ? event.messages : [];
-    const tail = messages.slice(-8).map((m) => ({ role: messageRole(m), text: trimText(extractText(m), 1800) })).filter((x) => x.text);
+    let assistantSeen = false;
+    const normalized = [];
+    for (const message of messages) {
+      const role = messageRole(message);
+      const text = trimText(extractText(message), 1800);
+      if (text) normalized.push({ role, text, followsAssistant: role === "user" && assistantSeen });
+      if (role === "assistant") assistantSeen = true;
+    }
+    const tail = normalized.slice(-8);
     exp.contextTail = tail;
     const users = tail.filter((x) => x.role === "user");
-    if (!exp.goal && users.length) exp.goal = users.at(-1).text;
+    if (!exp.goal && users.length) {
+      exp.goal = users.at(-1).text;
+      this.history.get(sessionID).goal = exp.goal;
+    }
     for (const item of users) {
       const fingerprint = item.text.slice(0, 1200);
       if (exp.seenUserMessages.has(fingerprint)) continue;
       exp.seenUserMessages.add(fingerprint);
-      if (CORRECTION_RE.test(item.text)) exp.corrections.push(item.text);
+      if (item.followsAssistant && CORRECTION_RE.test(item.text)) exp.corrections.push(item.text);
     }
     exp.corrections = exp.corrections.slice(-12);
     return exp;
@@ -231,6 +250,13 @@ class ExperienceRecorder {
   }
   clear(sessionID) {
     this.sessions.delete(sessionID);
+    this.history.delete(sessionID);
+  }
+
+  take(sessionID) {
+    const snapshot = this.snapshot(sessionID);
+    if (snapshot) this.sessions.delete(sessionID);
+    return snapshot;
   }
 }
 const SECRET_PATTERNS = [
@@ -748,11 +774,13 @@ class Telemetry {
 class InternalMailbox {
   constructor() {
     this.internal = new Map();
+    this.known = new Set();
     this.waiters = new Map();
     this.early = new Map();
     this.submitted = new Set();
   }
   register(sessionID, kind) {
+    this.known.add(sessionID);
     this.internal.set(sessionID, kind);
   }
   release(sessionID) {
@@ -763,7 +791,7 @@ class InternalMailbox {
     this.submitted.delete(sessionID);
   }
   isInternalSession(sessionID) {
-    return this.internal.has(sessionID);
+    return this.known.has(sessionID);
   }
   kind(sessionID) {
     return this.internal.get(sessionID);
@@ -812,6 +840,15 @@ class InternalMailbox {
         cancel: () => clearTimeout(timer)
       });
     });
+  }
+
+  clear() {
+    for (const waiter of this.waiters.values()) waiter.cancel();
+    this.internal.clear();
+    this.known.clear();
+    this.waiters.clear();
+    this.early.clear();
+    this.submitted.clear();
   }
 }
 const TERMINAL_EVENTS = new Set([
@@ -924,7 +961,14 @@ function scoreExperience(exp) {
 }
 
 function isReviewCandidate(exp, threshold) {
-  return scoreExperience(exp).score >= threshold;
+  return scoreExperience(exp).score >= threshold && hasLearningSignal(exp);
+}
+
+function hasLearningSignal(exp) {
+  const tools = exp.toolCalls?.length ?? 0;
+  return (exp.corrections?.length ?? 0) > 0 ||
+    (exp.recoveries ?? 0) > 0 ||
+    ((exp.verificationSteps ?? 0) >= 2 && tools >= 4);
 }
 
 function tokens(text) {
@@ -1055,33 +1099,67 @@ class ReviewPipeline {
   constructor({ ctx, recorder, store, telemetry, mailbox, config }) {
     Object.assign(this, { ctx, recorder, store, telemetry, mailbox, config });
     this.inFlight = new Set();
-    this.forced = new Set();
+    this.requests = new Map();
+    this.pending = new Map();
+    this.automaticReviews = new Map();
     this.disposed = false;
   }
   schedule(sessionID, { force = false } = {}) {
-    if (this.disposed || !sessionID || this.mailbox.isInternalSession(sessionID) || this.inFlight.has(sessionID)) return;
-    if (force) this.forced.add(sessionID);
+    if (this.disposed || !sessionID || this.mailbox.isInternalSession(sessionID)) {
+      return { scheduled: false, force, reason: "session is not eligible for review" };
+    }
+    const request = this.requests.get(sessionID) ?? { force: false };
+    if (!force && !request.force && (this.automaticReviews.get(sessionID) ?? 0) >= this.config.maxAutomaticReviewsPerSession) {
+      return { scheduled: false, force, reason: "automatic review limit reached" };
+    }
+    request.force ||= force;
+    this.requests.set(sessionID, request);
+    return { scheduled: true, force: request.force };
   }
-  executionFinished(sessionID) {
+  executionFinished(sessionID, { terminalType = "session.execution.succeeded" } = {}) {
     if (this.disposed || !sessionID || this.mailbox.isInternalSession(sessionID)) return;
-    const force = this.forced.delete(sessionID);
-    void this.review(sessionID, { force }).catch((error) => {
+    const request = this.requests.get(sessionID);
+    const force = Boolean(request?.force);
+    if (!force && terminalType !== "session.execution.succeeded") return;
+    this.requests.delete(sessionID);
+    if (this.inFlight.has(sessionID)) {
+      const pending = this.pending.get(sessionID) ?? { force: false, terminalType };
+      pending.force ||= force;
+      if (force) pending.terminalType = terminalType;
+      this.pending.set(sessionID, pending);
+      return;
+    }
+    this.start(sessionID, { force, terminalType });
+  }
+  start(sessionID, { force = false, terminalType = "session.execution.succeeded" } = {}) {
+    if (this.disposed || !this.config.enabled || this.inFlight.has(sessionID) || this.mailbox.isInternalSession(sessionID)) return;
+    const exp = this.recorder.snapshot(sessionID);
+    if (!exp) return;
+    const automaticCount = this.automaticReviews.get(sessionID) ?? 0;
+    if (!force && automaticCount >= this.config.maxAutomaticReviewsPerSession) return;
+    if (!force && !isReviewCandidate(exp, this.config.scoreThreshold)) return;
+    const batch = this.recorder.take(sessionID);
+    if (!batch) return;
+    if (!force) this.automaticReviews.set(sessionID, automaticCount + 1);
+    this.inFlight.add(sessionID);
+    void this.review(sessionID, batch, { force, terminalType }).catch((error) => {
       console.error("[opencode-learning] review failed", error);
+    }).finally(() => {
+      this.inFlight.delete(sessionID);
+      this.drain(sessionID);
     });
   }
-  async review(sessionID, { force = false } = {}) {
-    if (this.disposed || !this.config.enabled || this.inFlight.has(sessionID) || this.mailbox.isInternalSession(sessionID)) return { status: "skipped" };
-    this.inFlight.add(sessionID);
-    let shouldClear = false;
-    let score;
+  drain(sessionID) {
+    if (this.disposed || this.inFlight.has(sessionID)) return;
+    const pending = this.pending.get(sessionID);
+    if (!pending) return;
+    this.pending.delete(sessionID);
+    this.start(sessionID, pending);
+  }
+  async review(sessionID, exp, { force = false, terminalType = "session.execution.succeeded" } = {}) {
+    if (this.disposed || !this.config.enabled || this.mailbox.isInternalSession(sessionID)) return { status: "skipped" };
+    const score = scoreExperience(exp);
     try {
-      const exp = this.recorder.snapshot(sessionID);
-      if (!exp) return { status: "no-experience" };
-      score = scoreExperience(exp);
-      if (!force && !isReviewCandidate(exp, this.config.scoreThreshold)) {
-        shouldClear = true;
-        return { status: "below-threshold", score };
-      }
       const parent = await this.ctx.session.get({ sessionID });
       const directory = parent?.location?.directory ?? this.store.projectRoot;
       const model = parent?.model;
@@ -1107,8 +1185,7 @@ class ReviewPipeline {
         ok: deterministic.ok && (proposal.decision === "none" || agentValidation.decision === "accept")
       };
       if (this.disposed) throw new Error("learning pipeline was disposed during review");
-      await this.telemetry.recordReview({ sessionID, score, decision: proposal?.decision, skillId: proposal?.skillId, validation });
-      shouldClear = true;
+      await this.telemetry.recordReview({ sessionID, trigger: force ? "forced" : "automatic", terminalType, score, decision: proposal?.decision, skillId: proposal?.skillId, validation });
       if (!validation.ok || proposal.decision === "none") {
         if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Review completed with no applied change: ${summarizeNoChange(proposal, validation)}`);
         return { status: "no-change", proposal, validation, score };
@@ -1126,13 +1203,10 @@ class ReviewPipeline {
       return { status: "applied", applied, proposal, validation, score };
     } catch (error) {
       if (this.disposed) return { status: "disposed" };
-      await this.telemetry.recordReview({ sessionID, score, decision: "error", error: redactError(error) }).catch(() => {
+      await this.telemetry.recordReview({ sessionID, trigger: force ? "forced" : "automatic", terminalType, score, decision: "error", error: redactError(error) }).catch(() => {
       });
       if (this.config.notify && force) await notifySession(this.ctx, sessionID, `[opencode-learning] Review failed: ${redactError(error)}`);
       throw error;
-    } finally {
-      this.inFlight.delete(sessionID);
-      if (shouldClear) this.recorder.clear(sessionID);
     }
   }
   async runReflector({ directory, model, exp, candidates }) {
@@ -1179,7 +1253,9 @@ class ReviewPipeline {
   }
   async cleanup() {
     this.disposed = true;
-    this.forced.clear();
+    this.requests.clear();
+    this.pending.clear();
+    this.automaticReviews.clear();
   }
 }
 
@@ -1239,9 +1315,21 @@ export default Plugin.define({
     const eventBus = new EventBus(ctx);
     const runtimes = new Map();
     const sessionDirectories = new Map();
+    const sessionInfo = new Map();
 
-    const runtimeForSession = async (sessionID) => {
-      const session = await ctx.session.get({ sessionID });
+    const sessionInfoFor = async (sessionID) => {
+      if (!sessionInfo.has(sessionID)) sessionInfo.set(sessionID, await ctx.session.get({ sessionID }));
+      return sessionInfo.get(sessionID);
+    };
+
+    const foregroundSessionFor = async (sessionID) => {
+      if (!sessionID || mailbox.isInternalSession(sessionID)) return undefined;
+      const session = await sessionInfoFor(sessionID);
+      return session && !session.parentID ? session : undefined;
+    };
+
+    const runtimeForSession = async (sessionID, session) => {
+      session ??= await sessionInfoFor(sessionID);
       let directory = session?.location?.directory;
       if (!directory) throw new Error(`session ${sessionID} has no project directory`);
       directory = await canonicalDirectory(directory);
@@ -1256,35 +1344,42 @@ export default Plugin.define({
     };
 
     await registerAgents(ctx, config);
-    await registerTools(ctx, { config, mailbox, runtimeForSession });
+    await registerTools(ctx, { config, mailbox, runtimeForSession, foregroundSessionFor });
     await registerCommands(ctx);
 
     eventBus.start();
     const removeTerminalListener = eventBus.onTerminal((event) => {
-      const eventDirectory = event.location?.directory ?? sessionDirectories.get(event.sessionID);
-      if (!eventDirectory) return;
-      void canonicalDirectory(eventDirectory).then(async (directory) => {
+      void foregroundSessionFor(event.sessionID).then(async (session) => {
+        if (!session) return;
+        const eventDirectory = event.location?.directory ?? session.location?.directory ?? sessionDirectories.get(event.sessionID);
+        if (!eventDirectory) return;
+        const directory = await canonicalDirectory(eventDirectory);
         if (sessionDirectories.get(event.sessionID) === directory) sessionDirectories.delete(event.sessionID);
         const runtime = runtimes.get(directory);
         if (!runtime) return;
         await runtime.ready;
-        runtime.pipeline.executionFinished(event.sessionID);
+        runtime.pipeline.executionFinished(event.sessionID, { terminalType: event.type });
       }).catch((error) => console.error("[opencode-learning] terminal event routing failed", error));
     });
 
     await ctx.session.hook("context", async (event) => {
-      if (!event?.sessionID || mailbox.isInternalSession(event.sessionID)) return;
-      const runtime = await runtimeForSession(event.sessionID);
+      const session = await foregroundSessionFor(event?.sessionID);
+      if (!session) return;
+      const runtime = await runtimeForSession(event.sessionID, session);
       runtime.recorder.observeContext(event);
     });
     await ctx.tool.hook("execute.before", async (event) => {
-      if (!event?.sessionID || mailbox.isInternalSession(event.sessionID) || isLearningTool(event.tool)) return;
-      const runtime = await runtimeForSession(event.sessionID);
+      if (!event?.sessionID || isLearningTool(event.tool)) return;
+      const session = await foregroundSessionFor(event.sessionID);
+      if (!session) return;
+      const runtime = await runtimeForSession(event.sessionID, session);
       runtime.recorder.toolBefore(event);
     });
     await ctx.tool.hook("execute.after", async (event) => {
-      if (!event?.sessionID || mailbox.isInternalSession(event.sessionID) || isLearningTool(event.tool)) return;
-      const runtime = await runtimeForSession(event.sessionID);
+      if (!event?.sessionID || isLearningTool(event.tool)) return;
+      const session = await foregroundSessionFor(event.sessionID);
+      if (!session) return;
+      const runtime = await runtimeForSession(event.sessionID, session);
       const exp = runtime.recorder.toolAfter(event);
       if (!exp) return;
       if (event.tool === "skill") {
@@ -1308,6 +1403,8 @@ export default Plugin.define({
       removeTerminalListener();
       await Promise.allSettled([...runtimes.values()].map((runtime) => runtime.ready.then(() => runtime.pipeline?.cleanup())));
       await Promise.allSettled(mailbox.sessionIDs().map((id) => interruptSession(ctx, id)));
+      mailbox.clear();
+      sessionInfo.clear();
       await eventBus.dispose();
     };
   }
@@ -1341,7 +1438,7 @@ async function canonicalDirectory(directory) {
   }
 }
 
-async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
+async function registerTools(ctx, { config, mailbox, runtimeForSession, foregroundSessionFor }) {
   await ctx.tool.transform((tools) => {
     const add = (name, info, options) => tools.add({ ...info, name, options });
     add("submit_proposal", {
@@ -1373,9 +1470,13 @@ async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
       },
       output: objectOutput(),
       execute: async ({ force = false }, toolCtx) => {
-        const { pipeline } = await runtimeForSession(toolCtx.sessionID);
-        pipeline.schedule(toolCtx.sessionID, { force });
-        return result({ scheduled: true, force }, force ? "Forced learning review scheduled after this turn." : "Learning review scheduled after this turn.");
+        const session = await foregroundSessionFor(toolCtx.sessionID);
+        if (!session) {
+          return result({ scheduled: false, force, reason: "foreground sessions only" }, "Learning review is available only for foreground sessions.");
+        }
+        const { pipeline } = await runtimeForSession(toolCtx.sessionID, session);
+        const scheduled = pipeline.schedule(toolCtx.sessionID, { force });
+        return result(scheduled, scheduled.scheduled ? (force ? "Forced learning review scheduled after this turn." : "Learning review scheduled after this turn.") : "Learning review was not scheduled.");
       }
     }, { namespace: "learning", codemode: false });
     add("pending", {
@@ -1469,6 +1570,7 @@ async function registerTools(ctx, { config, mailbox, runtimeForSession }) {
           enabled: config.enabled,
           mode: config.mode,
           scoreThreshold: config.scoreThreshold,
+          maxAutomaticReviewsPerSession: config.maxAutomaticReviewsPerSession,
           confidenceThreshold: config.confidenceThreshold,
           agentValidation: config.agentValidation,
           globalWrites: "explicit-promotion-only",

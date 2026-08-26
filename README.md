@@ -72,8 +72,8 @@ skill. Approval fails when the original skill changed after the patch was
 proposed.
 
 Use `/learn` when a short session contains valuable knowledge but does not meet
-the automatic score threshold. Use `/learn-pending` to review all staged
-changes before accepting or rejecting them.
+the automatic score or signal requirements. Use `/learn-pending` to review all
+staged changes before accepting or rejecting them.
 
 ## Requirements
 
@@ -100,6 +100,7 @@ project, edit `<project>/.opencode/opencode.json(c)` or
       "options": {
         "mode": "suggest",
         "scoreThreshold": 10,
+        "maxAutomaticReviewsPerSession": 1,
         "confidenceThreshold": 0.72,
         "agentValidation": true,
         "notify": true,
@@ -185,12 +186,16 @@ grep 'learning.skills\|opencode-learning' ~/.local/share/opencode/log/opencode.l
 
 ## How it works
 
-The plugin records user corrections and non-learning tool activity. At the end
-of a session execution, it scores the completed experience. Work below the
-configured threshold is discarded. A qualifying experience follows this flow:
+The plugin records user corrections and non-learning tool activity only for
+root foreground sessions. Experience accumulates across executions until it
+reaches the configured score threshold and contains a meaningful learning
+signal: a post-response user correction, a recovery, or a multi-step verified
+workflow. Automatic review runs only after a successful execution and is
+limited to one attempt per session by default. A qualifying experience follows
+this flow:
 
 ```text
-completed project session
+successful foreground execution
   -> deterministic score
   -> hidden reflector agent
   -> structured create, patch, or no-change proposal
@@ -211,8 +216,9 @@ overwritten.
 
 ### Scoring
 
-Automatic review starts when the accumulated score reaches `scoreThreshold`.
-The score is calculated from the completed foreground session:
+Automatic review requires both the accumulated score reaching
+`scoreThreshold` and a meaningful learning signal. The score is calculated from
+the accumulated foreground experience:
 
 | Signal | Points |
 | --- | --- |
@@ -223,14 +229,18 @@ The score is calculated from the completed foreground session:
 | Activated skill | 2 |
 | Verification step | 2 |
 
-`/learn` forces the review and bypasses this threshold.
+`/learn` forces the review and bypasses the score, signal, terminal-outcome,
+and automatic-review-limit checks. Failed and interrupted executions are kept
+for a later successful execution or an explicit `/learn`, but do not trigger an
+automatic review by themselves.
 
 ### Architecture and lifecycle
 
 The plugin uses V2 session context hooks to record the conversation tail and
-tool hooks to record tool outcomes. It resolves each foreground session through
-`ctx.session.get()`, so project paths come from the session location rather than
-the service process directory.
+tool hooks to record tool outcomes. It resolves each root foreground session
+through `ctx.session.get()`, so project paths come from the session location
+rather than the service process directory. Child sessions and the plugin's
+internal reviewer sessions are excluded.
 
 Reflector and validator work runs in dedicated sessions with restricted
 structured callback tools. Their output is checked before any write. Internal
@@ -239,8 +249,9 @@ native skill reload capability, so accepted changes become available without a
 service restart.
 
 Automatic completion detection uses the public event stream. That stream is
-volatile by contract, so disconnected events are not replayed. `/learn` marks
-the current session for review when its next terminal event is observed.
+volatile by contract, so disconnected events are not replayed. Automatic
+reviews are considered on successful terminal events, while `/learn` marks the
+current session for review when its next terminal event is observed.
 
 ## Project data
 
@@ -269,9 +280,10 @@ skill.
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `suggest` | `off`, `suggest`, or `auto`. |
-| `scoreThreshold` | `10` | Minimum score for automatic review. `/learn` bypasses it. |
+| `scoreThreshold` | `10` | Minimum accumulated score for automatic review; a meaningful signal is also required. `/learn` bypasses it. |
 | `reviewerTimeoutMs` | `120000` | Timeout for each reflector or validator session. |
 | `maxEventsPerSession` | `120` | Maximum retained tool events per foreground session. |
+| `maxAutomaticReviewsPerSession` | `1` | Maximum automatic review attempts per foreground session. `0` disables automatic reviews; `/learn` remains available. |
 | `maxCandidates` | `5` | Maximum skill candidates sent to the reflector. |
 | `confidenceThreshold` | `0.72` | Minimum proposal confidence. |
 | `agentValidation` | `true` | Run the hidden validator. |
