@@ -7,28 +7,43 @@ import { ExperienceRecorder } from './recorder.ts'
 import { Curator, ReviewPipeline } from './review.ts'
 import { proposalInputSchema, SkillStore, validationInputSchema } from './store.ts'
 import { Telemetry } from './telemetry.ts'
-import { isRecord, SESSION_ID_KEY } from './shared.ts'
 import type {
-  AddLearningTool,
-  ComponentStatus,
-  ForegroundSessionFor,
-  IdInput,
-  LearningConfig,
   LearningToolInfo,
-  MailboxLike,
   OpenCodeContext,
-  PendingInput,
-  ReviewInput,
-  Runtime,
   SessionInfo,
-  SessionRuntimeFor,
-  SkillIdInput,
-  TerminalEvent,
-  ValidationSubmission,
-  Proposal,
-  RegisterToolsOptions,
-  UnknownRecord
-} from './types.ts'
+  SessionMovedEvent,
+  TerminalEvent
+} from './sdk.ts'
+import { isRecord, SESSION_ID_KEY } from './shared.ts'
+import type { LearningConfig, Proposal, ValidationSubmission, UnknownRecord } from './types.ts'
+
+type Runtime = {
+  directory: string
+  store: SkillStore
+  recorder: ExperienceRecorder
+  ready: Promise<Runtime>
+  telemetry: Telemetry
+  curator: Curator
+  pipeline: ReviewPipeline
+}
+type SessionRuntimeFor = (sessionID: string, session?: SessionInfo) => Promise<Runtime>
+type ForegroundSessionFor = (sessionID: string | undefined) => Promise<SessionInfo | undefined>
+type RegisterToolsOptions = {
+  config: LearningConfig
+  mailbox: InternalMailbox
+  runtimeForSession: SessionRuntimeFor
+  foregroundSessionFor: ForegroundSessionFor
+}
+type AddLearningTool = (name: string, info: LearningToolInfo, options: ToolOptions) => void
+type ReviewInput = { force?: boolean }
+type PendingInput = { action: 'list' | 'show' | 'reject'; id?: string }
+type IdInput = { id: string }
+type SkillIdInput = { skillId: string }
+type ComponentStatus = {
+  reflectorAgent: boolean
+  validatorAgent: boolean
+  commands: Record<string, boolean>
+}
 
 export class LearningSetup {
   readonly ctx: OpenCodeContext
@@ -43,6 +58,8 @@ export class LearningSetup {
   isSessionEventsStopped = false
   curatorTimer: ReturnType<typeof setInterval> | undefined
   removeTerminalListener: (() => boolean) | undefined
+  removeSessionMovedListener: (() => boolean) | undefined
+  readonly sessionInfoGenerations = new Map<string, number>()
 
   constructor(ctx: OpenCodeContext, config: LearningConfig) {
     this.ctx = ctx
@@ -59,12 +76,17 @@ export class LearningSetup {
       foregroundSessionFor: async (sessionID) => this.foregroundSessionFor(sessionID)
     })
     await registerCommands(this.ctx)
-    this.eventBus.start()
     this.removeTerminalListener = this.eventBus.onTerminal((event) => {
       void this.handleTerminal(event).catch((error: unknown) => {
         console.error('[opencode-learning] terminal event routing failed', error)
       })
     })
+    this.removeSessionMovedListener = this.eventBus.onSessionMoved((event) => {
+      void this.handleSessionMoved(event).catch((error: unknown) => {
+        console.error('[opencode-learning] session move routing failed', error)
+      })
+    })
+    this.eventBus.start()
     await this.registerHooks()
     this.startCuratorTimer()
     return async () => this.cleanup()
@@ -78,8 +100,8 @@ export class LearningSetup {
 
   async registerContextHook(): Promise<void> {
     await this.ctx.session.hook('context', async (event) => {
-      await this.enqueueSessionEvent(event?.sessionID, async () => {
-        const session = await this.foregroundSessionFor(event?.sessionID)
+      await this.enqueueSessionEvent(event.sessionID, async () => {
+        const session = await this.foregroundSessionFor(event.sessionID)
         if (session === undefined) {
           return
         }
@@ -165,11 +187,19 @@ export class LearningSetup {
   }
 
   async sessionInfoFor(sessionID: string): Promise<SessionInfo> {
-    if (!this.sessionInfo.has(sessionID)) {
-      this.sessionInfo.set(sessionID, await this.ctx.session.get({ [SESSION_ID_KEY]: sessionID }))
+    const cached = this.sessionInfo.get(sessionID)
+    if (cached !== undefined) {
+      return cached
     }
 
-    return this.sessionInfo.get(sessionID)!
+    const generation = this.sessionInfoGenerations.get(sessionID) ?? 0
+    const session = await this.ctx.session.get({ [SESSION_ID_KEY]: sessionID })
+    if (generation !== (this.sessionInfoGenerations.get(sessionID) ?? 0)) {
+      return this.sessionInfoFor(sessionID)
+    }
+
+    this.sessionInfo.set(sessionID, session)
+    return session
   }
 
   async foregroundSessionFor(sessionID: string | undefined): Promise<SessionInfo | undefined> {
@@ -212,7 +242,7 @@ export class LearningSetup {
   }
 
   async resolveSessionDirectory(sessionID: string, session: SessionInfo): Promise<string> {
-    const directory = session.location.directory ?? this.sessionDirectories.get(sessionID)
+    const directory = this.sessionDirectories.get(sessionID) ?? session.location.directory
     if (directory === undefined || directory.length === 0) {
       throw new Error(`session ${sessionID} has no project directory`)
     }
@@ -221,27 +251,43 @@ export class LearningSetup {
   }
 
   async handleTerminal(event: TerminalEvent): Promise<void> {
-    await this.enqueueSessionEvent(event.sessionID, async () => {
+    const { sessionID: sessionId } = event.data
+    await this.enqueueSessionEvent(sessionId, async () => {
       const runtime = await this.runtimeForTerminal(event)
       if (runtime === undefined) {
         return
       }
 
       await runtime.ready
-      const experience = runtime.recorder.finishTurn(event.sessionID, event.type, event.eventID)
+      const experience = runtime.recorder.finishTurn(sessionId, event.type, event.id)
       if (experience !== undefined) {
-        runtime.pipeline.executionFinished(event.sessionID, { terminalType: event.type })
+        runtime.pipeline.executionFinished(sessionId, { terminalType: event.type })
       }
     })
   }
 
+  async handleSessionMoved(event: SessionMovedEvent): Promise<void> {
+    const { sessionID: sessionId } = event.data
+    await this.enqueueSessionEvent(sessionId, async () => {
+      const directory = await canonicalDirectory(event.data.location.directory)
+      this.sessionInfoGenerations.set(
+        sessionId,
+        (this.sessionInfoGenerations.get(sessionId) ?? 0) + 1
+      )
+      this.sessionInfo.delete(sessionId)
+      this.sessionRuntimes.delete(sessionId)
+      this.sessionDirectories.set(sessionId, directory)
+    })
+  }
+
   async runtimeForTerminal(event: TerminalEvent): Promise<Runtime | undefined> {
-    const existing = this.sessionRuntimes.get(event.sessionID)
+    const { sessionID: sessionId } = event.data
+    const existing = this.sessionRuntimes.get(sessionId)
     if (existing !== undefined) {
       return existing
     }
 
-    const session = await this.foregroundSessionFor(event.sessionID)
+    const session = await this.foregroundSessionFor(sessionId)
     if (session === undefined) {
       return undefined
     }
@@ -249,7 +295,7 @@ export class LearningSetup {
     const eventDirectory =
       event.location?.directory ??
       session.location.directory ??
-      this.sessionDirectories.get(event.sessionID)
+      this.sessionDirectories.get(sessionId)
     if (eventDirectory === undefined || eventDirectory.length === 0) {
       return undefined
     }
@@ -257,8 +303,8 @@ export class LearningSetup {
     const directory = await canonicalDirectory(eventDirectory)
     const runtime = this.runtimes.get(directory)
     if (runtime !== undefined) {
-      this.sessionDirectories.set(event.sessionID, directory)
-      this.sessionRuntimes.set(event.sessionID, runtime)
+      this.sessionDirectories.set(sessionId, directory)
+      this.sessionRuntimes.set(sessionId, runtime)
     }
 
     return runtime
@@ -284,6 +330,7 @@ export class LearningSetup {
     }
 
     this.removeTerminalListener?.()
+    this.removeSessionMovedListener?.()
     this.isSessionEventsStopped = true
     await Promise.allSettled(this.sessionEventChains.values())
     this.sessionEventChains.clear()
@@ -296,9 +343,16 @@ export class LearningSetup {
       this.mailbox.sessionIds().map(async (sessionID) => interruptSession(this.ctx, sessionID))
     )
     this.mailbox.clear()
+    await Promise.allSettled(
+      Array.from(this.runtimes.values(), async (runtime) => {
+        await runtime.ready
+        await runtime.pipeline.waitForReviews()
+      })
+    )
     this.sessionRuntimes.clear()
     this.sessionDirectories.clear()
     this.sessionInfo.clear()
+    this.sessionInfoGenerations.clear()
     for (const runtime of this.runtimes.values()) {
       runtime.recorder.clear()
     }
@@ -322,7 +376,7 @@ function createRuntime({
   ctx: OpenCodeContext
   directory: string
   config: LearningConfig
-  mailbox: MailboxLike
+  mailbox: InternalMailbox
 }): Runtime {
   const store = new SkillStore({
     projectRoot: directory,
@@ -357,7 +411,7 @@ async function canonicalDirectory(directory: string): Promise<string> {
 function addCallbackTools(
   add: AddLearningTool,
   config: LearningConfig,
-  mailbox: MailboxLike
+  mailbox: InternalMailbox
 ): void {
   add(
     'submit_proposal',
@@ -487,6 +541,7 @@ function addPendingTool(add: AddLearningTool, runtimeForSession: SessionRuntimeF
 function addApplyTool(
   add: AddLearningTool,
   ctx: OpenCodeContext,
+  config: LearningConfig,
   runtimeForSession: SessionRuntimeFor
 ): void {
   add(
@@ -502,7 +557,9 @@ function addApplyTool(
       output: objectOutput(),
       async execute({ id }: IdInput, toolCtx: ToolContext) {
         const { store, telemetry } = await runtimeForSession(toolCtx.sessionID)
-        const applied = await store.applyPending(id)
+        const applied = await store.applyPending(id, {
+          confidenceThreshold: config.confidenceThreshold
+        })
         const skillId = applied.proposal?.skillId
         const appliedResult = isRecord(applied.result) ? applied.result : {}
         if (typeof skillId === 'string' && appliedResult.file !== undefined) {
@@ -647,7 +704,7 @@ async function registerTools(
     addCallbackTools(add, config, mailbox)
     addReviewTool(add, config, runtimeForSession, foregroundSessionFor)
     addPendingTool(add, runtimeForSession)
-    addApplyTool(add, ctx, runtimeForSession)
+    addApplyTool(add, ctx, config, runtimeForSession)
     addPromoteTool(add, ctx, runtimeForSession)
     addStatusTool(add, ctx, config, runtimeForSession)
     addCurateTool(add, ctx, runtimeForSession)

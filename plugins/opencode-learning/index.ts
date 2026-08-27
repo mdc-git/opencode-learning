@@ -1,7 +1,7 @@
 import { Plugin } from '@opencode-ai/plugin'
 import { loadConfig } from './config.ts'
+import type { OpenCodeContext } from './sdk.ts'
 import { LearningSetup } from './setup.ts'
-import type { OpenCodeContext } from './types.ts'
 
 export { normalizeTelemetryState } from './telemetry.ts'
 

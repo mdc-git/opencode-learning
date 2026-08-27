@@ -1,14 +1,12 @@
 import { isExplicitCorrection, classifyToolCall } from './scoring.ts'
 import { hasCallId, isRecord, SESSION_ID_KEY, sha256, trimText } from './shared.ts'
+import type { ContextEvent, ToolAfterEvent, ToolBeforeEvent } from './sdk.ts'
 import type {
-  ContextEvent,
   ContextTailItem,
   ExperienceState,
   ExperienceSnapshot,
   PendingTool,
   SessionHistory,
-  ToolAfterEvent,
-  ToolBeforeEvent,
   ToolCall,
   UnknownRecord
 } from './types.ts'
@@ -195,10 +193,14 @@ function createToolCall({
     turn,
     input,
     status,
-    result: trimText(status === 'error' ? event.error : event.result, 3e3),
+    result: trimText(toolResult(event), 3e3),
     durationMs: pending === undefined ? undefined : Date.now() - pending.startedAt,
     at: Date.now()
   }
+}
+
+function toolResult(event: ToolAfterEvent): unknown {
+  return event.status === 'error' ? event.error : event.result
 }
 
 function appendToolCall(exp: ExperienceState, record: ToolCall, maxEvents: number): void {
@@ -308,7 +310,7 @@ export class ExperienceRecorder {
 
     this.pendingTools.set(key, {
       [SESSION_ID_KEY]: event.sessionID,
-      callId: event.id!,
+      callId: event.id,
       tool: event.tool,
       input: trimText(event.input, 2500),
       startedAt: Date.now()

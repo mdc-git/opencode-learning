@@ -1,4 +1,9 @@
-import type { MailboxKind, MailboxWaiter } from './types.ts'
+type MailboxKind = 'proposal' | 'validation'
+type MailboxWaiter = {
+  resolve: (value: unknown) => void
+  reject: (error: unknown) => void
+  cancel: (error?: unknown) => void
+}
 
 export class InternalMailbox {
   private readonly internal = new Map<string, MailboxKind>()
@@ -14,7 +19,7 @@ export class InternalMailbox {
 
   release(sessionID: string): void {
     this.internal.delete(sessionID)
-    this.waiters.get(sessionID)?.cancel()
+    this.waiters.get(sessionID)?.cancel(new Error('internal mailbox released'))
     this.waiters.delete(sessionID)
     this.early.delete(sessionID)
     this.submitted.delete(sessionID)
@@ -43,13 +48,15 @@ export class InternalMailbox {
       throw new Error(`session is not registered for ${kind}`)
     }
 
+    if (this.submitted.has(sessionID)) {
+      throw new Error(`session ${sessionID} already submitted ${kind}`)
+    }
+
     this.submitted.add(sessionID)
     const waiter = this.waiters.get(sessionID)
     if (waiter) {
       this.waiters.delete(sessionID)
       waiter.resolve(payload)
-    } else if (this.early.has(sessionID)) {
-      throw new Error(`session ${sessionID} already submitted ${kind}`)
     } else {
       this.early.set(sessionID, payload)
     }
@@ -81,8 +88,9 @@ export class InternalMailbox {
           clearTimeout(timer)
           reject(error instanceof Error ? error : new Error('internal mailbox rejected'))
         },
-        cancel() {
+        cancel(error = new Error('internal mailbox canceled')) {
           clearTimeout(timer)
+          reject(error instanceof Error ? error : new Error('internal mailbox canceled'))
         }
       })
     })
@@ -90,7 +98,7 @@ export class InternalMailbox {
 
   clear(): void {
     for (const waiter of this.waiters.values()) {
-      waiter.cancel()
+      waiter.cancel(new Error('internal mailbox cleared'))
     }
 
     this.internal.clear()

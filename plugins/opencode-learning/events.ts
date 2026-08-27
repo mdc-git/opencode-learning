@@ -1,7 +1,14 @@
-import { EVENT_ID_KEY, isRecord, redactError, SESSION_ID_KEY } from './shared.ts'
-import type { OpenCodeContext, SessionInfo, TerminalEvent } from './types.ts'
+import { redactError, SESSION_ID_KEY } from './shared.ts'
+import type {
+  OpenCodeContext,
+  OpenCodeEvent,
+  SessionCreateInput,
+  SessionInfo,
+  SessionMovedEvent,
+  TerminalEvent
+} from './sdk.ts'
 
-const TERMINAL_EVENTS = new Set([
+const TERMINAL_EVENT_TYPES = new Set([
   'session.execution.succeeded',
   'session.execution.failed',
   'session.execution.interrupted'
@@ -10,9 +17,10 @@ const TERMINAL_EVENTS = new Set([
 export class EventBus {
   private readonly ctx: OpenCodeContext
   private readonly listeners = new Set<(event: TerminalEvent) => void>()
+  private readonly moveListeners = new Set<(event: SessionMovedEvent) => void>()
   private controller: AbortController | undefined
   private task: Promise<void> | undefined
-  private iterator: AsyncIterator<unknown> | undefined
+  private iterator: AsyncIterator<OpenCodeEvent> | undefined
   private disposed = false
 
   constructor(ctx: OpenCodeContext) {
@@ -39,6 +47,7 @@ export class EventBus {
       },
       onEvent: (event) => {
         emitTerminalEvent(event, this.listeners)
+        emitSessionMovedEvent(event, this.moveListeners)
       }
     })
 
@@ -59,6 +68,11 @@ export class EventBus {
     return () => this.listeners.delete(listener)
   }
 
+  onSessionMoved(listener: (event: SessionMovedEvent) => void): () => boolean {
+    this.moveListeners.add(listener)
+    return () => this.moveListeners.delete(listener)
+  }
+
   async dispose(): Promise<void> {
     this.disposed = true
     this.controller?.abort()
@@ -71,12 +85,12 @@ export class EventBus {
 }
 
 type EventLoopOptions = {
-  subscribe: () => AsyncIterable<unknown>
+  subscribe: () => AsyncIterable<OpenCodeEvent>
   shouldStop: () => boolean
   signal: AbortSignal
-  setIterator: (iterator: AsyncIterator<unknown>) => void
-  clearIterator: (iterator: AsyncIterator<unknown>) => void
-  onEvent: (event: unknown) => void
+  setIterator: (iterator: AsyncIterator<OpenCodeEvent>) => void
+  clearIterator: (iterator: AsyncIterator<OpenCodeEvent>) => void
+  onEvent: (event: OpenCodeEvent) => void
 }
 
 async function runEventLoop(options: EventLoopOptions): Promise<void> {
@@ -111,7 +125,7 @@ async function continueEventLoop(options: EventLoopOptions): Promise<void> {
 }
 
 async function consumeEventStream(
-  stream: AsyncIterable<unknown>,
+  stream: AsyncIterable<OpenCodeEvent>,
   options: EventLoopOptions
 ): Promise<void> {
   const iterator = stream[Symbol.asyncIterator]()
@@ -122,7 +136,7 @@ async function consumeEventStream(
 }
 
 async function consumeEventItem(
-  iterator: AsyncIterator<unknown>,
+  iterator: AsyncIterator<OpenCodeEvent>,
   options: EventLoopOptions
 ): Promise<void> {
   return iterator.next().then(async (iteration) => {
@@ -136,13 +150,16 @@ async function consumeEventItem(
 }
 
 async function continueConsumingEvents(
-  iterator: AsyncIterator<unknown>,
+  iterator: AsyncIterator<OpenCodeEvent>,
   options: EventLoopOptions
 ): Promise<void> {
   return consumeEventItem(iterator, options)
 }
 
-function emitTerminalEvent(event: unknown, listeners: Set<(event: TerminalEvent) => void>): void {
+function emitTerminalEvent(
+  event: OpenCodeEvent,
+  listeners: Set<(event: TerminalEvent) => void>
+): void {
   const terminalEvent = terminalEventFrom(event)
   if (terminalEvent === undefined) {
     return
@@ -157,34 +174,33 @@ function emitTerminalEvent(event: unknown, listeners: Set<(event: TerminalEvent)
   }
 }
 
-function terminalEventFrom(event: unknown): TerminalEvent | undefined {
-  if (!isRecord(event) || typeof event.type !== 'string' || !TERMINAL_EVENTS.has(event.type)) {
-    return undefined
+function emitSessionMovedEvent(
+  event: OpenCodeEvent,
+  listeners: Set<(event: SessionMovedEvent) => void>
+): void {
+  if (event.type !== 'session.moved') {
+    return
   }
 
-  const eventData = isRecord(event.data) ? event.data : {}
-  const sessionId = typeof eventData.sessionID === 'string' ? eventData.sessionID : undefined
-  if (sessionId === undefined || sessionId.length === 0) {
-    return undefined
-  }
-
-  const eventId = [event.id, event.eventID, eventData.eventID, eventData.id].find(
-    (value): value is string => typeof value === 'string'
-  )
-  return {
-    type: event.type,
-    [SESSION_ID_KEY]: sessionId,
-    [EVENT_ID_KEY]: eventId,
-    location: eventLocation(event.location)
+  for (const listener of listeners) {
+    try {
+      listener(event)
+    } catch (error) {
+      console.error('[opencode-learning] session-move listener failed', error)
+    }
   }
 }
 
-function eventLocation(value: unknown): { directory?: string } | undefined {
-  if (!isRecord(value) || typeof value.directory !== 'string') {
-    return undefined
+function terminalEventFrom(event: OpenCodeEvent): TerminalEvent | undefined {
+  if (isTerminalEvent(event)) {
+    return event
   }
 
-  return { directory: value.directory }
+  return undefined
+}
+
+function isTerminalEvent(event: OpenCodeEvent): event is TerminalEvent {
+  return TERMINAL_EVENT_TYPES.has(event.type)
 }
 
 async function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -211,15 +227,10 @@ export async function createReviewSession(
     model
   }: { directory: string; agent: string; title: string; model?: SessionInfo['model'] }
 ): Promise<SessionInfo> {
-  const input: {
-    title: string
-    agent: string
-    location: { directory: string }
-    model?: SessionInfo['model']
-  } = { title, agent, location: { directory } }
-  if (model !== undefined && model.id.length > 0 && model.providerID.length > 0) {
-    input.model = model
-  }
+  const input: SessionCreateInput =
+    model === undefined || model.id.length === 0 || model.providerID.length === 0
+      ? { title, agent, location: { directory } }
+      : { title, agent, location: { directory }, model }
 
   return ctx.session.create(input)
 }

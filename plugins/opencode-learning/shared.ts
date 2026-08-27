@@ -5,7 +5,6 @@ import { pid } from 'node:process'
 import type { Proposal, UnknownRecord } from './types.ts'
 
 export const SESSION_ID_KEY = 'sessionID'
-export const EVENT_ID_KEY = 'eventID'
 
 export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -56,8 +55,40 @@ export function normalizeCreateProposal(proposal: Proposal): Proposal {
   return { ...proposal, skillId }
 }
 
+export async function assertNoSymlinkPath(file: string): Promise<void> {
+  const absolute = path.resolve(file)
+  const { root } = path.parse(absolute)
+  const parts = absolute.slice(root.length).split(path.sep).filter(Boolean)
+  await assertNoSymlinkComponents(root, parts)
+}
+
+async function assertNoSymlinkComponents(current: string, parts: string[]): Promise<void> {
+  const [part, ...remaining] = parts
+  if (part === undefined) {
+    return
+  }
+
+  const next = path.join(current, part)
+  try {
+    const stat = await fs.lstat(next)
+    if (stat.isSymbolicLink()) {
+      throw new Error(`refusing symlink path component: ${next}`)
+    }
+  } catch (error: unknown) {
+    if (hasErrorCode(error, 'ENOENT')) {
+      return
+    }
+
+    throw error
+  }
+
+  await assertNoSymlinkComponents(next, remaining)
+}
+
 export async function atomicWrite(file: string, text: string): Promise<void> {
+  await assertNoSymlinkPath(file)
   await fs.mkdir(path.dirname(file), { recursive: true })
+  await assertNoSymlinkPath(file)
   const temporary = `${file}.tmp-${pid}-${crypto.randomUUID()}`
   await fs.writeFile(temporary, text, { encoding: 'utf8', mode: 384 })
   await fs.rename(temporary, file)

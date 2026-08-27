@@ -11,33 +11,42 @@ import {
   trimText,
   writeJson
 } from './shared.ts'
-import { validateProposal } from './store.ts'
+import { validateProposal, type OwnedSkill, type SkillStore } from './store.ts'
+import type { InternalMailbox } from './mailbox.ts'
+import type { ExperienceRecorder } from './recorder.ts'
 import type {
-  Candidate,
-  CuratorConfig,
-  CuratorResult,
-  ExperienceRecorderLike,
-  ExperienceSnapshot,
   LearningConfig,
-  MailboxLike,
-  OwnedSkill,
+  CuratorConfig,
   Proposal,
-  ReviewAttempt,
-  ReviewOptions,
-  ReviewOutcome,
-  ReviewPipelineOptions,
-  ReviewRequest,
-  ReviewValidation,
-  SessionInfo,
-  OpenCodeContext,
-  PreparedReview,
-  SkillTelemetry,
-  SkillStoreLike,
-  TelemetryLike,
-  UnknownRecord,
   Validation,
-  ValidationSubmission
+  ValidationSubmission,
+  UnknownRecord,
+  ExperienceSnapshot,
+  Candidate
 } from './types.ts'
+import type { OpenCodeContext, SessionInfo, SkillInfo } from './sdk.ts'
+import type { SkillTelemetry, Telemetry } from './telemetry.ts'
+
+type ReviewRequest = { force: boolean; terminalType?: string }
+type ReviewOptions = { force?: boolean; terminalType?: string; triggerDecision?: TriggerDecision }
+type ReviewAttemptOptions = ReviewOptions & { onReflectorStart?: () => void }
+type ReviewValidation = UnknownRecord & {
+  deterministic: Validation
+  agent: ValidationSubmission
+  ok: boolean
+}
+type ReviewAttempt = { proposal: Proposal; validation: ReviewValidation }
+type ReviewOutcome = UnknownRecord & { status: string }
+type PreparedReview = { batch: ExperienceSnapshot; candidate: TriggerDecision | undefined }
+type CuratorResult = { stale: string[]; archived: string[] } | { skipped: string }
+type ReviewPipelineOptions = {
+  ctx: OpenCodeContext
+  recorder: ExperienceRecorder
+  store: SkillStore
+  telemetry: Telemetry
+  mailbox: InternalMailbox
+  config: LearningConfig
+}
 
 function tokens(text: unknown): Set<string> {
   const matches = String(text)
@@ -71,10 +80,10 @@ async function retrieveCandidates({
 }: {
   ctx: OpenCodeContext
   exp: ExperienceSnapshot
-  store: SkillStoreLike
+  store: SkillStore
   maxCandidates?: number
 }): Promise<Candidate[]> {
-  let catalog: ReadonlyArray<{ id: string; name: string; description?: string }> = []
+  let catalog: readonly SkillInfo[] = []
   try {
     const skills = await ctx.skill.list()
     catalog = skills.data ?? []
@@ -245,7 +254,7 @@ Call learning_submit_validation exactly once. Reject unsupported generalization.
 function isReviewSessionUnavailable(
   sessionID: string,
   isDisposed: boolean,
-  mailbox: MailboxLike
+  mailbox: InternalMailbox
 ): boolean {
   return sessionID.length === 0 || isDisposed || mailbox.isInternalSession(sessionID)
 }
@@ -273,7 +282,7 @@ function canStartReview({
   isDisposed: boolean
   isEnabled: boolean
   inFlight: Set<string>
-  mailbox: MailboxLike
+  mailbox: InternalMailbox
 }): boolean {
   return (
     !isReviewSessionUnavailable(sessionID, isDisposed, mailbox) &&
@@ -284,10 +293,7 @@ function canStartReview({
 
 type TriggerEvaluation = { decision: string; score: number; strongSignals: string[] }
 
-function recordTriggerEvaluationSafely(
-  telemetry: TelemetryLike,
-  evaluation: TriggerEvaluation
-): void {
+function recordTriggerEvaluationSafely(telemetry: Telemetry, evaluation: TriggerEvaluation): void {
   void telemetry.recordTriggerEvaluation(evaluation).catch((error: unknown) => {
     console.error('[opencode-learning] trigger telemetry failed', error)
   })
@@ -304,7 +310,7 @@ function isDuplicateFingerprint({
   candidate: TriggerDecision
   reviewedFingerprints: Map<string, Map<string, string>>
   lastSuppressedFingerprint: Map<string, string>
-  telemetry: TelemetryLike
+  telemetry: Telemetry
 }): boolean {
   const reviewed = reviewedFingerprints.get(sessionID)
   if (!reviewed?.has(candidate.fingerprint)) {
@@ -347,7 +353,7 @@ function shouldDeferWorkflowReview({
   successfulTurns: Map<string, number>
   lastAutomaticReviewTurn: Map<string, number>
   workflowCooldownTurns: number
-  telemetry: TelemetryLike
+  telemetry: Telemetry
 }): boolean {
   if (
     !candidate.workflowOnly ||
@@ -369,7 +375,7 @@ function shouldDeferWorkflowReview({
   return true
 }
 
-function isIneligibleCandidate(candidate: TriggerDecision, telemetry: TelemetryLike): boolean {
+function isIneligibleCandidate(candidate: TriggerDecision, telemetry: Telemetry): boolean {
   if (candidate.eligible) {
     return false
   }
@@ -401,7 +407,7 @@ function evaluateAutomaticReview({
   lastAutomaticReviewTurn: Map<string, number>
   reviewedFingerprints: Map<string, Map<string, string>>
   lastSuppressedFingerprint: Map<string, string>
-  telemetry: TelemetryLike
+  telemetry: Telemetry
 }): TriggerDecision | undefined {
   const features = deriveTriggerFeatures(exp)
   const candidate = scoreReviewCandidate(features, scoreThreshold)
@@ -529,8 +535,22 @@ async function retryReviewAttempt(
   }
 }
 
+function createAutomaticReviewStart(telemetry: Telemetry, isForced: boolean): () => void {
+  let hasStarted = false
+  return () => {
+    if (isForced || hasStarted) {
+      return
+    }
+
+    hasStarted = true
+    void telemetry.recordAutomaticReview().catch((error: unknown) => {
+      console.error('[opencode-learning] automatic-review telemetry failed', error)
+    })
+  }
+}
+
 type ReviewFailureOptions = {
-  telemetry: TelemetryLike
+  telemetry: Telemetry
   ctx: OpenCodeContext
   sessionID: string
   terminalType: string
@@ -538,6 +558,13 @@ type ReviewFailureOptions = {
   score: ReviewScore
   error: unknown
   notify: boolean
+}
+type ReviewErrorOptions = {
+  sessionId: string
+  terminalType: string
+  force: boolean
+  score: ReviewScore
+  error: unknown
 }
 
 async function recordReviewFailure({
@@ -571,8 +598,8 @@ async function recordReviewFailure({
 
 type ReviewResultOptions = {
   ctx: OpenCodeContext
-  store: SkillStoreLike
-  telemetry: TelemetryLike
+  store: SkillStore
+  telemetry: Telemetry
   config: LearningConfig
   sessionID: string
   terminalType: string
@@ -722,7 +749,7 @@ async function finishApplied({
   return { status: 'applied', applied, proposal, validation, score }
 }
 
-async function applyProposal(store: SkillStoreLike, proposal: Proposal): Promise<unknown> {
+async function applyProposal(store: SkillStore, proposal: Proposal): Promise<unknown> {
   if (proposal.decision === 'create') {
     return store.create(proposal, { scope: proposal.scope })
   }
@@ -732,10 +759,10 @@ async function applyProposal(store: SkillStoreLike, proposal: Proposal): Promise
 
 export class ReviewPipeline {
   private readonly ctx: OpenCodeContext
-  private readonly recorder: ExperienceRecorderLike
-  private readonly store: SkillStoreLike
-  private readonly telemetry: TelemetryLike
-  private readonly mailbox: MailboxLike
+  private readonly recorder: ExperienceRecorder
+  private readonly store: SkillStore
+  private readonly telemetry: Telemetry
+  private readonly mailbox: InternalMailbox
   private readonly config: LearningConfig
   private readonly inFlight = new Set<string>()
   private readonly requests = new Map<string, ReviewRequest>()
@@ -745,6 +772,7 @@ export class ReviewPipeline {
   private readonly successfulTurns = new Map<string, number>()
   private readonly reviewedFingerprints = new Map<string, Map<string, string>>()
   private readonly lastSuppressedFingerprint = new Map<string, string>()
+  private readonly activeReviews = new Set<Promise<unknown>>()
 
   constructor({ ctx, recorder, store, telemetry, mailbox, config }: ReviewPipelineOptions) {
     this.ctx = ctx
@@ -852,13 +880,25 @@ export class ReviewPipeline {
       this.lastAutomaticReviewTurn.set(sessionID, this.successfulTurns.get(sessionID) ?? 0)
     }
 
-    void this.reviewWithRetry(sessionID, batch, { force, terminalType, triggerDecision: candidate })
+    const review = this.reviewWithRetry(sessionID, batch, {
+      force,
+      terminalType,
+      triggerDecision: candidate
+    })
       .catch((error: unknown) => {
         console.error('[opencode-learning] review failed', error)
       })
       .finally(() => {
         this.inFlight.delete(sessionID)
         this.drain(sessionID)
+      })
+    this.activeReviews.add(review)
+    void review
+      .then(() => {
+        this.activeReviews.delete(review)
+      })
+      .catch(() => {
+        this.activeReviews.delete(review)
       })
   }
 
@@ -879,7 +919,7 @@ export class ReviewPipeline {
   async reviewAttempt(
     sessionID: string,
     exp: ExperienceSnapshot,
-    { triggerDecision }: ReviewOptions = {}
+    { triggerDecision, onReflectorStart }: ReviewAttemptOptions = {}
   ): Promise<ReviewAttempt> {
     const parent = await this.ctx.session.get({ [SESSION_ID_KEY]: sessionID })
     const directory = parent?.location?.directory ?? this.store.projectRoot
@@ -891,7 +931,14 @@ export class ReviewPipeline {
       maxCandidates: this.config.maxCandidates
     })
     const proposal = normalizeCreateProposal(
-      await this.runReflector({ directory, model, exp, candidates, triggerDecision })
+      await this.runReflector({
+        directory,
+        model,
+        exp,
+        candidates,
+        triggerDecision,
+        onReflectorStart
+      })
     )
     proposal.scope = 'project'
     const deterministic = validateProposal(proposal, {
@@ -915,6 +962,17 @@ export class ReviewPipeline {
     return { proposal, validation: reviewValidation(deterministic, proposal, agentValidation) }
   }
 
+  async runReviewAttempts(
+    sessionID: string,
+    exp: ExperienceSnapshot,
+    options: ReviewAttemptOptions
+  ): Promise<ReviewAttempt> {
+    return retryReviewAttempt(
+      async () => this.reviewAttempt(sessionID, exp, options),
+      () => this.disposed
+    )
+  }
+
   async reviewWithRetry(
     sessionID: string,
     exp: ExperienceSnapshot,
@@ -929,14 +987,17 @@ export class ReviewPipeline {
     }
 
     const score = reviewScore(triggerDecision)
+    const onReflectorStart = createAutomaticReviewStart(this.telemetry, force)
     await this.telemetry.recordExperience(exp).catch((error: unknown) => {
       console.error('[opencode-learning] telemetry recordExperience failed', error)
     })
     try {
-      const attempt = await retryReviewAttempt(
-        async () => this.reviewAttempt(sessionID, exp, { force, terminalType, triggerDecision }),
-        () => this.disposed
-      )
+      const attempt = await this.runReviewAttempts(sessionID, exp, {
+        force,
+        terminalType,
+        triggerDecision,
+        onReflectorStart
+      })
       if (this.disposed) {
         return { status: 'disposed' }
       }
@@ -958,22 +1019,32 @@ export class ReviewPipeline {
         }
       })
     } catch (error) {
-      if (this.disposed) {
-        return { status: 'disposed' }
-      }
-
-      await recordReviewFailure({
-        telemetry: this.telemetry,
-        ctx: this.ctx,
-        [SESSION_ID_KEY]: sessionID,
-        terminalType,
-        force,
-        score,
-        error,
-        notify: this.config.notify
-      })
-      throw error
+      return this.handleReviewError({ sessionId: sessionID, terminalType, force, score, error })
     }
+  }
+
+  async handleReviewError({
+    sessionId,
+    terminalType,
+    force,
+    score,
+    error
+  }: ReviewErrorOptions): Promise<ReviewOutcome> {
+    if (this.disposed) {
+      return { status: 'disposed' }
+    }
+
+    await recordReviewFailure({
+      telemetry: this.telemetry,
+      ctx: this.ctx,
+      [SESSION_ID_KEY]: sessionId,
+      terminalType,
+      force,
+      score,
+      error,
+      notify: this.config.notify
+    })
+    throw error
   }
 
   recordFingerprint(
@@ -999,14 +1070,17 @@ export class ReviewPipeline {
     model,
     exp,
     candidates,
-    triggerDecision
+    triggerDecision,
+    onReflectorStart
   }: {
     directory: string
     model?: SessionInfo['model']
     exp: ExperienceSnapshot
     candidates: Candidate[]
     triggerDecision?: TriggerDecision
+    onReflectorStart?: () => void
   }): Promise<Proposal> {
+    onReflectorStart?.()
     const session = await createReviewSession(this.ctx, {
       directory,
       model,
@@ -1021,6 +1095,7 @@ export class ReviewPipeline {
     this.mailbox.register(id, 'proposal')
     try {
       const callback = this.mailbox.wait<Proposal>(id, this.config.reviewerTimeoutMs)
+      void callback.catch(() => undefined)
       await promptSession(this.ctx, id, buildReviewPrompt({ exp, candidates, triggerDecision }))
       const proposal = await callback
       if (!this.mailbox.hasSubmitted(id)) {
@@ -1063,6 +1138,7 @@ export class ReviewPipeline {
     this.mailbox.register(id, 'validation')
     try {
       const callback = this.mailbox.wait<ValidationSubmission>(id, this.config.reviewerTimeoutMs)
+      void callback.catch(() => undefined)
       await promptSession(
         this.ctx,
         id,
@@ -1089,6 +1165,11 @@ export class ReviewPipeline {
     this.reviewedFingerprints.clear()
     this.lastSuppressedFingerprint.clear()
   }
+
+  async waitForReviews(): Promise<void> {
+    await Promise.allSettled(this.activeReviews)
+    this.activeReviews.clear()
+  }
 }
 
 function summarizeNoChange(proposal: Proposal, validation: ReviewValidation): string {
@@ -1106,8 +1187,8 @@ function summarizeNoChange(proposal: Proposal, validation: ReviewValidation): st
 
 export class Curator {
   private readonly config: LearningConfig
-  private readonly store: SkillStoreLike
-  private readonly telemetry: TelemetryLike
+  private readonly store: SkillStore
+  private readonly telemetry: Telemetry
   private readonly stateFile: string
 
   constructor({
@@ -1116,8 +1197,8 @@ export class Curator {
     telemetry
   }: {
     config: LearningConfig
-    store: SkillStoreLike
-    telemetry: TelemetryLike
+    store: SkillStore
+    telemetry: Telemetry
   }) {
     this.config = config
     this.store = store
@@ -1157,8 +1238,8 @@ export class Curator {
 }
 
 async function curateOwnedSkill(
-  store: SkillStoreLike,
-  telemetry: TelemetryLike,
+  store: SkillStore,
+  telemetry: Telemetry,
   item: OwnedSkill,
   config: CuratorConfig
 ): Promise<{ id: string; state: 'archived' | 'stale' | 'active' | undefined }> {
@@ -1185,7 +1266,7 @@ async function curateOwnedSkill(
 }
 
 async function archiveOwnedSkill(
-  store: SkillStoreLike,
+  store: SkillStore,
   meta: SkillTelemetry | undefined,
   skillId: string
 ): Promise<{ id: string; state: 'archived' | 'stale' | 'active' | undefined }> {

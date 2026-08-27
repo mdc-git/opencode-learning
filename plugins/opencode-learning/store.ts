@@ -1,17 +1,43 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { atomicWrite, hasErrorCode, isRecord, isSafeId, nowIso, sha256 } from './shared.ts'
+import {
+  assertNoSymlinkPath,
+  atomicWrite,
+  hasErrorCode,
+  isRecord,
+  isSafeId,
+  nowIso,
+  sha256
+} from './shared.ts'
 import type {
-  OwnedSkill,
-  PendingDetails,
-  PendingProposal,
   Proposal,
   SectionOperation,
   SupportingFile,
   UnknownRecord,
   Validation
 } from './types.ts'
+
+export type OwnedSkill = {
+  skillId: string
+  scope: string
+  file: string
+  dir: string
+  text: string
+  sha256: string
+  supportingFiles: Array<{ path: string; bytes: number }>
+}
+type PendingProposal = { id: string; proposal: Proposal; validation: UnknownRecord }
+type PendingDetails = PendingProposal & { previews: Record<string, string> }
+type CreateResult = {
+  file: string
+  text: string
+  sha256: string
+  supportingFiles: string[]
+}
+type PatchResult = { file: string; text: string; sha256: string; addedFiles: string[] }
+type AppliedPending = { result: unknown; proposal: Proposal }
+type StagedProposal = { id: string; dir: string }
 
 const SECRET_PATTERNS = [
   /-----begin (?:rsa |ec |openssh )?private key-----/iv,
@@ -352,6 +378,7 @@ export class SkillStore {
 
   async getOwned(skillId: string, scope = 'project'): Promise<OwnedSkill | undefined> {
     const file = this.skillPath(skillId, scope)
+    await assertNoSymlinkPath(file)
     try {
       const text = await fs.readFile(file, 'utf8')
       if (!text.includes(OWNER_MARKER)) {
@@ -431,11 +458,10 @@ ${skill.body.trim()}
     const skillId = proposal.skillId ?? ''
     const dir = this.skillDir(skillId, scope)
     const file = path.join(dir, 'SKILL.md')
-    await ensurePathMissing(file, `skill already exists: ${proposal.skillId}`)
-
     const text = this.renderCreated(proposal)
-    await atomicWrite(file, text)
+    await reserveDirectory(dir, `skill already exists: ${proposal.skillId}`)
     try {
+      await atomicWrite(file, text)
       await this.addSupportingFiles(dir, proposal.skill?.files ?? [])
     } catch (error) {
       await fs.rm(dir, { recursive: true, force: true })
@@ -482,6 +508,7 @@ ${skill.body.trim()}
   async stage(proposal: Proposal, validation: UnknownRecord): Promise<{ id: string; dir: string }> {
     const id = `${Date.now()}-${randomUUID()}-${proposal.skillId ?? 'none'}`
     const dir = path.join(this.pendingRoot, id)
+    await assertNoSymlinkPath(dir)
     await fs.mkdir(dir, { recursive: true })
     await atomicWrite(
       path.join(dir, 'proposal.json'),
@@ -530,6 +557,7 @@ ${skill.body.trim()}
 
   async getPending(id: string): Promise<PendingDetails> {
     const dir = safePending(this.pendingRoot, id)
+    await assertNoSymlinkPath(dir)
     const raw = JSON.parse(await fs.readFile(path.join(dir, 'proposal.json'), 'utf8')) as {
       proposal: Proposal
       validation: UnknownRecord
@@ -550,23 +578,39 @@ ${skill.body.trim()}
     return pendingDetails
   }
 
-  async applyPending(id: string): Promise<{ result: unknown; proposal: Proposal }> {
+  async applyPending(
+    id: string,
+    { confidenceThreshold = 0.72 }: { confidenceThreshold?: number } = {}
+  ): Promise<{ result: unknown; proposal: Proposal }> {
     const dir = safePending(this.pendingRoot, id)
-    const raw = JSON.parse(await fs.readFile(path.join(dir, 'proposal.json'), 'utf8')) as {
-      proposal: Proposal
+    await assertNoSymlinkPath(dir)
+    const raw = JSON.parse(await fs.readFile(path.join(dir, 'proposal.json'), 'utf8')) as unknown
+    if (!isRecord(raw) || !isRecord(raw.proposal)) {
+      throw new Error('pending proposal is invalid')
     }
-    const { proposal } = raw
+
+    const proposal = raw.proposal as Proposal
+    if (proposal.scope !== undefined && proposal.scope !== 'project') {
+      throw new Error('pending proposal must target project scope')
+    }
+
+    const projectProposal = { ...proposal, scope: 'project' }
+    const validation = validateProposal(projectProposal, { confidenceThreshold })
+    if (!validation.ok) {
+      throw new Error(`pending proposal is no longer valid: ${validation.errors.join('; ')}`)
+    }
+
     let appliedResult
-    if (proposal.decision === 'create') {
-      appliedResult = await this.create(proposal, { scope: proposal.scope ?? 'project' })
-    } else if (proposal.decision === 'patch') {
-      appliedResult = await this.patch(proposal, { scope: proposal.scope ?? 'project' })
+    if (projectProposal.decision === 'create') {
+      appliedResult = await this.create(projectProposal, { scope: 'project' })
+    } else if (projectProposal.decision === 'patch') {
+      appliedResult = await this.patch(projectProposal, { scope: 'project' })
     } else {
       appliedResult = { skipped: true }
     }
 
     await fs.rm(dir, { recursive: true, force: true })
-    return { result: appliedResult, proposal }
+    return { result: appliedResult, proposal: projectProposal }
   }
 
   async rejectPending(id: string): Promise<void> {
@@ -594,6 +638,7 @@ ${skill.body.trim()}
       }
     }
 
+    await assertNoSymlinkPath(target)
     await fs.mkdir(this.globalRootSkills, { recursive: true })
     let isReserved = false
     try {
@@ -627,6 +672,7 @@ ${skill.body.trim()}
     }
 
     const target = path.join(this.archiveRoot, scope, `${Date.now()}-${skillId}`)
+    await assertNoSymlinkPath(target)
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.rename(current.dir, target)
     return true
@@ -759,18 +805,18 @@ async function walk(
   )
 }
 
-async function ensurePathMissing(file: string, message: string): Promise<void> {
+async function reserveDirectory(dir: string, message: string): Promise<void> {
+  await assertNoSymlinkPath(dir)
+  await fs.mkdir(path.dirname(dir), { recursive: true })
   try {
-    await fs.access(file)
+    await fs.mkdir(dir)
   } catch (error: unknown) {
-    if (hasErrorCode(error, 'ENOENT')) {
-      return
+    if (hasErrorCode(error, 'EEXIST')) {
+      throw new Error(message, { cause: error })
     }
 
     throw error
   }
-
-  throw new Error(message)
 }
 
 async function requireOwnedSkill(

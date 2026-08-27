@@ -1,12 +1,39 @@
 import path from 'node:path'
 import { isRecord, readJson, writeJson } from './shared.ts'
-import type {
-  ExperienceSnapshot,
-  SkillTelemetry,
-  TelemetryState,
-  TriggerStats,
-  UnknownRecord
-} from './types.ts'
+import type { ExperienceSnapshot, UnknownRecord } from './types.ts'
+
+type TriggerStats = {
+  version: number
+  successfulTurns: number
+  eligible: number
+  deferred: number
+  suppressed: number
+  automaticReviews: number
+  accepted: number
+  noChange: number
+  errors: number
+  signals: { correction: number; recovery: number; workflow: number }
+  scores: { below12: number; from12To15: number; from16To23: number; atLeast24: number }
+}
+export type SkillTelemetry = {
+  createdAt: number
+  updatedAt: number
+  uses: number
+  observedSessions: number
+  sessionsWithErrors: number
+  sessionsWithRecovery: number
+  sessionsWithCorrections: number
+  patches: number
+  state: string
+  owner: string
+  seenSessions: string[]
+}
+type TelemetryState = UnknownRecord & {
+  version: number
+  skills: Record<string, SkillTelemetry>
+  reviews: unknown[]
+  triggerStats: TriggerStats
+}
 
 function defaultTriggerStats(): TriggerStats {
   return {
@@ -152,7 +179,6 @@ function recordTriggerDecision(stats: TriggerStats, decision: string | undefined
   switch (decision) {
     case 'review': {
       stats.eligible += 1
-      stats.automaticReviews += 1
       break
     }
 
@@ -224,7 +250,12 @@ export class Telemetry {
   }
 
   async load(): Promise<this> {
-    this.state = normalizeTelemetryState(await readJson(this.file, this.state))
+    const raw = await readJson<unknown>(this.file, undefined)
+    this.state = normalizeTelemetryState(raw)
+    if (raw !== undefined && JSON.stringify(raw) !== JSON.stringify(this.state)) {
+      await writeJson(this.file, this.state)
+    }
+
     return this
   }
 
@@ -284,6 +315,11 @@ export class Telemetry {
 
   async recordSuccessfulTurn(): Promise<void> {
     this.state.triggerStats.successfulTurns += 1
+    return this.flush()
+  }
+
+  async recordAutomaticReview(): Promise<void> {
+    this.state.triggerStats.automaticReviews += 1
     return this.flush()
   }
 
