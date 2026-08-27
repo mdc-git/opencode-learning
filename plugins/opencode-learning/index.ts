@@ -1756,9 +1756,6 @@ async function registerCommands(ctx) {
           await ctx.session.prompt({
             sessionID,
             text: template.replaceAll("$1", prompt.text.trim()),
-            files: prompt.files,
-            agents: prompt.agents,
-            skills: prompt.skills,
             delivery
           });
         }
