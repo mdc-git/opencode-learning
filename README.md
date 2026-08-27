@@ -4,6 +4,7 @@ This OpenCode V2 plugin extracts reusable procedures from completed sessions
 and stores them as native OpenCode skills.
 
 <!-- markdownlint-disable-next-line MD033 -->
+
 <video controls src="https://github.com/user-attachments/assets/e323399e-8978-4eab-b73b-1d0c442c5cd8"></video>
 
 Install it globally to use it in every project, or install it under one
@@ -91,16 +92,14 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "permissions": [
-    { "action": "learning_promote", "resource": "*", "effect": "ask" }
-  ],
+  "permissions": [{ "action": "learning_promote", "resource": "*", "effect": "ask" }],
   "plugins": [
     {
       "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git",
       "options": {
         "mode": "suggest",
-        "scoreThreshold": 10,
-        "maxAutomaticReviewsPerSession": 1,
+        "scoreThreshold": 12,
+        "workflowCooldownTurns": 3,
         "confidenceThreshold": 0.72,
         "agentValidation": true,
         "notify": true,
@@ -173,16 +172,16 @@ grep 'learning.skills\|opencode-learning' ~/.local/share/opencode/log/opencode.l
 
 ## Commands
 
-| Command | Action |
-| --- | --- |
-| `/learn` | Force a review after the current turn. |
-| `/learn-pending` | List staged proposals for the current project. |
-| `/learn-show <id>` | Show a proposal, validation result, and preview. |
-| `/learn-approve <id>` | Apply a staged proposal and reload skills. |
-| `/learn-reject <id>` | Remove a staged proposal. |
-| `/learn-status` | Show configuration, components, paths, and recent reviews. |
-| `/learn-curate` | Run stale and archive maintenance. |
-| `/learn-promote <skill-id>` | Copy an owned project skill to the global registry. |
+| Command                     | Action                                                                       |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `/learn`                    | Force a review after the current turn.                                       |
+| `/learn-pending`            | List staged proposals for the current project.                               |
+| `/learn-show <id>`          | Show a proposal, validation result, and preview.                             |
+| `/learn-approve <id>`       | Apply a staged proposal and reload skills.                                   |
+| `/learn-reject <id>`        | Remove a staged proposal.                                                    |
+| `/learn-status`             | Show configuration, components, paths, trigger counters, and recent reviews. |
+| `/learn-curate`             | Run stale and archive maintenance.                                           |
+| `/learn-promote <skill-id>` | Copy an owned project skill to the global registry.                          |
 
 ## How it works
 
@@ -191,8 +190,9 @@ root foreground sessions. Experience accumulates across executions until it
 reaches the configured score threshold and contains a meaningful learning
 signal: a post-response user correction, a recovery, or a multi-step verified
 workflow. Automatic review runs only after a successful execution and is
-limited to one attempt per session by default. A qualifying experience follows
-this flow:
+started only when the accumulated evidence independently qualifies. Each review
+consumes its evidence batch, so later reviews require fresh learning signals.
+A qualifying experience follows this flow:
 
 ```text
 successful foreground execution
@@ -216,23 +216,61 @@ overwritten.
 
 ### Scoring
 
-Automatic review requires both the accumulated score reaching
-`scoreThreshold` and a meaningful learning signal. The score is calculated from
-the accumulated foreground experience:
+Automatic review triggers when the accumulated score reaches `scoreThreshold`
+and at least one strong closed-loop signal is present: an incorporated
+correction, a confirmed recovery, or a repeated verified workflow. The score
+uses capped closed-loop features rather than raw activity volume:
 
-| Signal | Points |
-| --- | --- |
-| Each tool call | 1 |
-| Each failed tool call | 3 additional |
-| Recovery after a failed call | 5 |
-| User correction | 8 |
-| Activated skill | 2 |
-| Verification step | 2 |
+```text
+C = min(incorporated corrections, 1)
+R = min(confirmed recoveries, 2)
+W = min(repeated verified workflows, 1)
+V = min(successful verifications after mutation, 2)
+F = min(unresolved failures, 2)
+D = min(distinct tool categories, 3)
 
-`/learn` forces the review and bypasses the score, signal, terminal-outcome,
-and automatic-review-limit checks. Failed and interrupted executions are kept
-for a later successful execution or an explicit `/learn`, but do not trigger an
+score = 12*C + 8*R + 8*W + 2*V + 1*F + 1*D
+```
+
+Automatic review triggers at `score >= 12` with at least one correction,
+recovery, or verified-workflow signal. Raw tool calls, skill loads, failed
+checks, and keyword matches do NOT earn points by themselves; they remain
+available as reflector evidence.
+
+`/learn` forces the review and bypasses the score, signal, cadence, and
+duplicate-suppression checks. Failed and interrupted executions are kept for a
+later successful execution or an explicit `/learn`, but do not trigger an
 automatic review by themselves.
+
+#### Closed-loop signals
+
+The trigger is ordinary deterministic plugin code; the reflector and validator
+agents run only after a batch qualifies. One concise example of each signal:
+
+- **Explicit correction -> changed action -> successful completion.** A user
+  follows up with "No, patch the source file instead." The next successful turn
+  contains a successful edit of the source file.
+- **Failed operation -> materially changed equivalent retry -> success.** A
+  shell `npm test` run errors, then the same operation retried with a corrected
+  command succeeds within the next two non-inspection calls.
+- **Mutation -> recognized successful verification, repeated on another
+  successful turn.** A turn succeeds after a successful edit followed by a
+  successful `npm test`, and the same category/operation sequence recurs in
+  another successful turn.
+
+#### Cadence and suppression
+
+- Workflow-only candidates (a repeated verified workflow with no correction or
+  recovery) wait for three successful turns after the previous automatic review
+  before being reviewed.
+- Evidence accumulates while a candidate waits; the deferred batch is not
+  consumed, so new signals merge into it.
+- Correction and recovery candidates bypass the workflow cadence gate.
+- Equivalent accepted or no-change fingerprints are not reviewed repeatedly in
+  the same session; a later candidate with the same fingerprint is retained but
+  not reflected until a new correction or recovery changes the fingerprint.
+- Each review consumes its evidence batch, so later reviews require fresh
+  learning signals.
 
 ### Architecture and lifecycle
 
@@ -277,26 +315,26 @@ skill.
 
 ## Options
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `mode` | `suggest` | `off`, `suggest`, or `auto`. |
-| `scoreThreshold` | `10` | Minimum accumulated score for automatic review; a meaningful signal is also required. `/learn` bypasses it. |
-| `reviewerTimeoutMs` | `120000` | Timeout for each reflector or validator session. |
-| `maxEventsPerSession` | `120` | Maximum retained tool events per foreground session. |
-| `maxAutomaticReviewsPerSession` | `1` | Maximum automatic review attempts per foreground session. `0` disables automatic reviews; `/learn` remains available. |
-| `maxCandidates` | `5` | Maximum skill candidates sent to the reflector. |
-| `confidenceThreshold` | `0.72` | Minimum proposal confidence. |
-| `agentValidation` | `true` | Run the hidden validator. |
-| `notify` | `true` | Add synthetic session notices for reviews explicitly started with `/learn`; automatic reviews remain silent. |
-| `projectSkillDir` | `.opencode/skills` | Learned-skill path relative to the project root. |
-| `stateDir` | `.opencode/.learning` | Runtime-state path relative to the project root. |
-| `globalSkillDir` | `~/.config/opencode/skills` | Explicit promotion destination. |
-| `reflectorAgent` | `learning-reflector` | Reflector agent ID. |
-| `validatorAgent` | `learning-validator` | Validator agent ID. |
-| `curator.enabled` | `true` | Enable stale and archive maintenance. |
-| `curator.checkEveryHours` | `24` | Minimum interval between curator runs. |
-| `curator.staleAfterDays` | `30` | Mark inactive owned skills as stale. |
-| `curator.archiveAfterDays` | `90` | Move inactive owned skills to the archive. |
+| Option                     | Default                     | Meaning                                                                                                                                                   |
+| -------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`                     | `suggest`                   | `off`, `suggest`, or `auto`.                                                                                                                              |
+| `scoreThreshold`           | `12`                        | Minimum V2 closed-loop score for automatic review; at least one correction, recovery, or verified-workflow signal is also required. `/learn` bypasses it. |
+| `workflowCooldownTurns`    | `3`                         | Successful turns to wait before re-reviewing a workflow-only candidate.                                                                                   |
+| `reviewerTimeoutMs`        | `120000`                    | Timeout for each reflector or validator session.                                                                                                          |
+| `maxEventsPerSession`      | `120`                       | Maximum retained tool events per foreground session.                                                                                                      |
+| `maxCandidates`            | `5`                         | Maximum skill candidates sent to the reflector.                                                                                                           |
+| `confidenceThreshold`      | `0.72`                      | Minimum proposal confidence.                                                                                                                              |
+| `agentValidation`          | `true`                      | Run the hidden validator.                                                                                                                                 |
+| `notify`                   | `true`                      | Add synthetic session notices for reviews explicitly started with `/learn`; automatic reviews remain silent.                                              |
+| `projectSkillDir`          | `.opencode/skills`          | Learned-skill path relative to the project root.                                                                                                          |
+| `stateDir`                 | `.opencode/.learning`       | Runtime-state path relative to the project root.                                                                                                          |
+| `globalSkillDir`           | `~/.config/opencode/skills` | Explicit promotion destination.                                                                                                                           |
+| `reflectorAgent`           | `learning-reflector`        | Reflector agent ID.                                                                                                                                       |
+| `validatorAgent`           | `learning-validator`        | Validator agent ID.                                                                                                                                       |
+| `curator.enabled`          | `true`                      | Enable stale and archive maintenance.                                                                                                                     |
+| `curator.checkEveryHours`  | `24`                        | Minimum interval between curator runs.                                                                                                                    |
+| `curator.staleAfterDays`   | `30`                        | Mark inactive owned skills as stale.                                                                                                                      |
+| `curator.archiveAfterDays` | `90`                        | Move inactive owned skills to the archive.                                                                                                                |
 
 ## Remove
 

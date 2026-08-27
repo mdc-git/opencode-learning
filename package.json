@@ -1,14 +1,46 @@
 {
   "name": "opencode-learning",
   "version": "1.0.0",
+  "description": "Deterministic procedural learning for OpenCode V2.",
+  "license": "MIT",
+  "repository": "github:mdc-git/opencode-learning",
   "type": "module",
   "exports": "./plugins/opencode-learning/index.ts",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "check:deps": "depcruise --config .dependency-cruiser.mjs plugins/opencode-learning/*.ts",
+    "check:knip": "knip"
+  },
+  "files": [
+    "plugins"
+  ],
+  "keywords": [
+    "opencode-plugin",
+    "procedural-learning",
+    "developer-tools"
+  ],
   "dependencies": {
     "@opencode-ai/plugin": "beta"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/mdc-git/opencode-learning.git"
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "dependency-cruiser": "^16.10.4",
+    "eslint": "^10.8.1",
+    "eslint-config-xo": "^1.0.0",
+    "eslint-plugin-boundaries": "^7.2.0",
+    "eslint-plugin-sonarjs": "^4.2.0",
+    "globals": "^17.11.0",
+    "knip": "^5.88.1",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3"
   },
   "//": "Keep @opencode-ai/plugin on the beta dist-tag so this plugin follows the OpenCode beta package family."
 }
