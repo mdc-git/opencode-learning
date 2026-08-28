@@ -1,0 +1,18 @@
+{
+  "theme": {
+    "name": "opencode"
+  },
+  "diffs": {
+    "wrap": "word"
+  },
+  "session": {
+    "sidebar": "hide",
+    "scrollbar": true,
+    "thinking": "show"
+  },
+  "scroll": {
+    "speed": 0.1,
+    "acceleration": false
+  },
+  "animations": true
+}
