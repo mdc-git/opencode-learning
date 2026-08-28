@@ -6,7 +6,7 @@ import { LearningSetup } from './setup.ts'
 export { normalizeTelemetryState } from './telemetry.ts'
 
 export default Plugin.define({
-  id: 'learning.skills',
+  id: 'github.learning_skills',
   async setup(ctx: OpenCodeContext): Promise<(() => Promise<void>) | undefined> {
     const config = loadConfig(ctx.options as unknown)
     if (!config.enabled) {

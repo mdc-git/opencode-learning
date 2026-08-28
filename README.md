@@ -160,7 +160,7 @@ From a project where the plugin should be active, verify that it loaded:
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-The response should contain `learning.skills`. Start OpenCode in that project
+The response should contain `github.learning_skills`. Start OpenCode in that project
 and run `/learn-status` to check the agents, commands, paths, pending proposals,
 and recent reviews.
 
