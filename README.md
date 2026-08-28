@@ -79,6 +79,7 @@ staged changes before accepting or rejecting them.
 ## Requirements
 
 - OpenCode V2
+- Node.js 20 or newer for local dependency checks
 
 ## Install
 
@@ -136,15 +137,37 @@ declared dependencies into an isolated cache, and loads the plugin. See
 [Verify](#verify) below to confirm it loaded.
 
 > [!NOTE]
-> If the plugin fails to load with an `NpmInstallFailedError` about a missing
-> `package.json`, a stale npm or OpenCode package cache may be referencing a
-> prior failed clone. Clear both caches and restart:
+> V2 stores a git package install under a cache key such as
+> `~/.cache/opencode/packages/git-<sha256>/`, not under a package-named
+> directory. The local development override below does not use that package
+> cache. If a deployed package reports an install error, inspect the service
+> log and the exact cache entry before removing anything.
 >
-> ```sh
-> rm -rf ~/.cache/opencode/packages/opencode-learning@git+https:*
-> npm cache clean --force
-> opencode2 service restart
-> ```
+> The package loader refreshes mutable git references when they are loaded.
+
+## Local development
+
+This repository includes a tracked local V2 harness in `.opencode/`:
+
+- `opencode.jsonc` removes the globally deployed `github.learning_skills` plugin.
+- `local-learning.ts` loads the checkout and assigns the local
+  `local.learning_skills` ID.
+- This is a server-only plugin; it does not provide a TUI addon.
+- `.opencode/cli.json` is available only for an intentionally isolated config
+  directory; the normal workflow keeps the global CLI configuration active.
+
+Run the private server and TUI from the repository root:
+
+```sh
+cd /Storage/Development/opencode-learning
+npm install
+opencode2 --standalone
+```
+
+Do not set `OPENCODE_CONFIG_DIR` for this normal checkout workflow. OpenCode
+uses the global configuration as the base and merges the project
+`.opencode/opencode.jsonc` on top of it. The removal operation prevents the
+deployed plugin and the local wrapper from registering the same plugin ID.
 
 ## Verify
 
@@ -160,14 +183,42 @@ From a project where the plugin should be active, verify that it loaded:
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-The response should contain `github.learning_skills`. Start OpenCode in that project
-and run `/learn-status` to check the agents, commands, paths, pending proposals,
-and recent reviews.
+For a deployed package, the response should contain `github.learning_skills`.
+When running from this checkout, it should instead contain `local.learning_skills`
+with a local source. Start OpenCode in that project and run `/learn-status` to
+check the agents, commands, paths, pending proposals, and recent reviews.
 
 For loading failures, inspect the service log:
 
 ```sh
-grep 'learning.skills\|opencode-learning' ~/.local/share/opencode/log/opencode.log | tail -n 50
+grep 'learning_skills\|opencode-learning' ~/.local/share/opencode/log/opencode.log | tail -n 50
+```
+
+## Git deployment
+
+The global Git installation uses the package export, not the project-local
+`.opencode/` harness. After changing source or package metadata:
+
+1. Run the developer checks below.
+2. Commit and push the change.
+3. Run `/deploy` from this repository, or remove the exact cache entry and
+   restart the background service.
+
+V2 stores the package in a cache entry named
+`~/.cache/opencode/packages/git-<sha256>/`. `/deploy` derives the exact key from
+the configured Git package string, removes that entry, and restarts the service
+so V2 fetches a fresh checkout. Do not remove a package-named cache path or use
+a broad cache glob.
+
+## Developer checks
+
+```sh
+npm install
+npm run lint
+npm run format:check
+npm run typecheck
+npm run check:deps
+npm run check:knip
 ```
 
 ## Commands

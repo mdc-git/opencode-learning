@@ -1,4 +1,10 @@
 node_modules/
 .learning/
-.opencode/
 package-lock.json
+!.opencode/
+.opencode/*
+!.opencode/cli.json
+!.opencode/opencode.jsonc
+!.opencode/local-learning.ts
+!.opencode/commands/
+!.opencode/commands/deploy.md
