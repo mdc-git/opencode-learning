@@ -11,8 +11,13 @@ export class InternalMailbox {
   private readonly waiters = new Map<string, MailboxWaiter>()
   private readonly early = new Map<string, unknown>()
   private readonly submitted = new Set<string>()
+  private closed = false
 
   register(sessionID: string, kind: MailboxKind): void {
+    if (this.closed) {
+      throw new Error('internal mailbox is closed')
+    }
+
     this.known.add(sessionID)
     this.internal.set(sessionID, kind)
   }
@@ -63,7 +68,7 @@ export class InternalMailbox {
   }
 
   async wait<T>(sessionID: string, timeoutMs: number): Promise<T> {
-    if (!this.internal.has(sessionID)) {
+    if (this.closed || !this.internal.has(sessionID)) {
       throw new Error(`internal session ${sessionID} is not registered`)
     }
 
@@ -97,14 +102,22 @@ export class InternalMailbox {
   }
 
   clear(): void {
-    for (const waiter of this.waiters.values()) {
-      waiter.cancel(new Error('internal mailbox cleared'))
-    }
-
+    this.close()
     this.internal.clear()
     this.known.clear()
     this.waiters.clear()
     this.early.clear()
     this.submitted.clear()
+  }
+
+  close(): void {
+    if (this.closed) {
+      return
+    }
+
+    this.closed = true
+    for (const waiter of this.waiters.values()) {
+      waiter.cancel(new Error('internal mailbox cleared'))
+    }
   }
 }

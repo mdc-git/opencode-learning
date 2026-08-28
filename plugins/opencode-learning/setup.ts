@@ -339,6 +339,7 @@ export class LearningSetup {
       runtimeCleanups.push(this.cleanupRuntime(runtime))
     })
     await Promise.allSettled(runtimeCleanups)
+    this.mailbox.close()
     await Promise.allSettled(
       this.mailbox.sessionIds().map(async (sessionID) => interruptSession(this.ctx, sessionID))
     )

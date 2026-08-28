@@ -1080,7 +1080,6 @@ export class ReviewPipeline {
     triggerDecision?: TriggerDecision
     onReflectorStart?: () => void
   }): Promise<Proposal> {
-    onReflectorStart?.()
     const session = await createReviewSession(this.ctx, {
       directory,
       model,
@@ -1092,8 +1091,11 @@ export class ReviewPipeline {
       throw new Error('OpenCode did not return a reflector session id')
     }
 
-    this.mailbox.register(id, 'proposal')
+    let isRegistered = false
     try {
+      this.mailbox.register(id, 'proposal')
+      isRegistered = true
+      onReflectorStart?.()
       const callback = this.mailbox.wait<Proposal>(id, this.config.reviewerTimeoutMs)
       void callback.catch(() => undefined)
       await promptSession(this.ctx, id, buildReviewPrompt({ exp, candidates, triggerDecision }))
@@ -1104,7 +1106,10 @@ export class ReviewPipeline {
 
       return proposal
     } finally {
-      this.mailbox.release(id)
+      if (isRegistered) {
+        this.mailbox.release(id)
+      }
+
       await interruptSession(this.ctx, id)
     }
   }
@@ -1135,8 +1140,10 @@ export class ReviewPipeline {
       throw new Error('OpenCode did not return a validator session id')
     }
 
-    this.mailbox.register(id, 'validation')
+    let isRegistered = false
     try {
+      this.mailbox.register(id, 'validation')
+      isRegistered = true
       const callback = this.mailbox.wait<ValidationSubmission>(id, this.config.reviewerTimeoutMs)
       void callback.catch(() => undefined)
       await promptSession(
@@ -1151,7 +1158,10 @@ export class ReviewPipeline {
 
       return validation
     } finally {
-      this.mailbox.release(id)
+      if (isRegistered) {
+        this.mailbox.release(id)
+      }
+
       await interruptSession(this.ctx, id)
     }
   }
