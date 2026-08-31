@@ -2,6 +2,6 @@
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     "-github.learning_skills",
-    "./local-learning.ts"
+    "./"
   ]
 }

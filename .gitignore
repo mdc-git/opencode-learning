@@ -6,5 +6,6 @@ package-lock.json
 !.opencode/cli.json
 !.opencode/opencode.jsonc
 !.opencode/local-learning.ts
+!.opencode/index.ts
 !.opencode/commands/
 !.opencode/commands/deploy.md
