@@ -1,243 +1,22 @@
-import { isExplicitCorrection, classifyToolCall } from './scoring.ts'
-import { hasCallId, isRecord, SESSION_ID_KEY, sha256, trimText } from './shared.ts'
+import {
+  extractText,
+  normalizeContextMessages,
+  recordContextCorrections,
+  updateExperienceGoal
+} from './recorder-context.ts'
+import {
+  appendToolCall,
+  consumePendingTool,
+  createToolCall,
+  isNewTerminalEvent,
+  observeToolCall,
+  toolAfterTarget,
+  toolBeforeTarget,
+  toolStatus
+} from './recorder-tools.ts'
+import { SESSION_ID_KEY, trimText } from './shared.ts'
 import type { ContextEvent, ToolAfterEvent, ToolBeforeEvent } from './sdk.ts'
-import type {
-  ContextTailItem,
-  ExperienceState,
-  ExperienceSnapshot,
-  PendingTool,
-  SessionHistory,
-  ToolCall,
-  UnknownRecord
-} from './types.ts'
-
-function extractText(value: unknown, depth = 0): string {
-  if (value === null || value === undefined || depth > 8) {
-    return ''
-  }
-
-  if (typeof value === 'string') {
-    return value
-  }
-
-  if (Array.isArray(value)) {
-    return extractTextArray(value, depth)
-  }
-
-  if (!isRecord(value)) {
-    return ''
-  }
-
-  return extractRecordText(value, depth)
-}
-
-function extractTextArray(value: unknown[], depth: number): string {
-  return value
-    .map((item) => extractText(item, depth + 1))
-    .filter(Boolean)
-    .join('\n')
-}
-
-function extractRecordText(value: UnknownRecord, depth: number): string {
-  const typed = extractTypedText(value, depth)
-  if (typed !== undefined) {
-    return typed
-  }
-
-  if (Array.isArray(value.content)) {
-    return extractText(value.content, depth + 1)
-  }
-
-  return extractRecordTextFallback(value, depth)
-}
-
-function extractTypedText(value: UnknownRecord, depth: number): string | undefined {
-  const { type } = value
-  if (typeof type !== 'string') {
-    return undefined
-  }
-
-  if ((type === 'text' || type === 'reasoning') && typeof value.text === 'string') {
-    return value.text
-  }
-
-  if (type === 'tool-result') {
-    return extractToolResultText(value.result, depth)
-  }
-
-  if (type === 'tool-call') {
-    return extractToolCallText(value.input, depth)
-  }
-
-  return undefined
-}
-
-function extractToolResultText(value: unknown, depth: number): string | undefined {
-  if (!isRecord(value) || value.value === null || value.value === undefined) {
-    return undefined
-  }
-
-  const { value: resultValue } = value
-  return typeof resultValue === 'string' ? resultValue : extractText(resultValue, depth + 1)
-}
-
-function extractToolCallText(value: unknown, depth: number): string | undefined {
-  return value === null || value === undefined ? undefined : extractText(value, depth + 1)
-}
-
-function extractRecordTextFallback(value: UnknownRecord, depth: number): string {
-  for (const key of ['text', 'content', 'message', 'output']) {
-    if (!Object.hasOwn(value, key)) {
-      continue
-    }
-
-    const text = extractText(value[key], depth + 1)
-    if (text.length > 0) {
-      return text
-    }
-  }
-
-  return ''
-}
-
-function messageRole(message: unknown): string | undefined {
-  if (!isRecord(message) || typeof message.role !== 'string') {
-    return undefined
-  }
-
-  return message.role
-}
-
-function normalizeContextMessages(messages: unknown[]): ContextTailItem[] {
-  let previousRole: string | undefined
-  const normalized: ContextTailItem[] = []
-  for (const message of messages) {
-    const role = messageRole(message)
-    const text = trimText(extractText(message), 1800)
-    if (text.length > 0) {
-      normalized.push({
-        role,
-        text,
-        followsAssistant: role === 'user' && previousRole === 'assistant'
-      })
-    }
-
-    previousRole = role
-  }
-
-  return normalized
-}
-
-function updateExperienceGoal(
-  exp: ExperienceState,
-  sessionID: string,
-  users: ContextTailItem[],
-  history: Map<string, SessionHistory>
-): void {
-  if (exp.goal.length > 0) {
-    return
-  }
-
-  const lastUser = users.at(-1)
-  if (lastUser === undefined) {
-    return
-  }
-
-  exp.goal = lastUser.text
-  const sessionHistory = history.get(sessionID)
-  if (sessionHistory !== undefined) {
-    sessionHistory.goal = exp.goal
-  }
-}
-
-function recordContextCorrections(exp: ExperienceState, users: ContextTailItem[]): void {
-  for (const item of users) {
-    const userFingerprint = item.text.slice(0, 1200)
-    if (exp.seenUserMessages.has(userFingerprint)) {
-      continue
-    }
-
-    exp.seenUserMessages.add(userFingerprint)
-    if (item.followsAssistant && isExplicitCorrection(item.text)) {
-      exp.corrections.push(item.text)
-      exp.correctionSignals.push({ turn: exp.turn, fingerprint: sha256(userFingerprint) })
-    }
-  }
-
-  exp.corrections = exp.corrections.slice(-12)
-}
-
-function toolEventKey(event: { sessionID?: string; id?: string }): string | undefined {
-  if (event.sessionID === undefined || event.sessionID.length === 0 || !hasCallId(event.id)) {
-    return undefined
-  }
-
-  return `${event.sessionID}:${event.id}`
-}
-
-function createToolCall({
-  event,
-  turn,
-  input,
-  status,
-  pending
-}: {
-  event: ToolAfterEvent
-  turn: number
-  input: string
-  status: ToolCall['status']
-  pending: PendingTool | undefined
-}): ToolCall {
-  return {
-    tool: event.tool ?? '',
-    turn,
-    input,
-    status,
-    result: trimText(toolResult(event), 3e3),
-    durationMs: pending === undefined ? undefined : Date.now() - pending.startedAt,
-    at: Date.now()
-  }
-}
-
-function toolResult(event: ToolAfterEvent): unknown {
-  return event.status === 'error' ? event.error : event.result
-}
-
-function appendToolCall(exp: ExperienceState, record: ToolCall, maxEvents: number): void {
-  exp.toolCalls.push(record)
-  if (exp.toolCalls.length > maxEvents) {
-    exp.toolCalls.shift()
-  }
-}
-
-function observeToolCall(exp: ExperienceState, event: ToolAfterEvent, record: ToolCall): void {
-  recordSkillUse(exp, event)
-  if (isRecovery(exp, record)) {
-    exp.recoveries += 1
-  }
-
-  if (classifyToolCall(record) === 'verify') {
-    exp.verificationSteps += 1
-  }
-}
-
-function recordSkillUse(exp: ExperienceState, event: ToolAfterEvent): void {
-  if (event.tool !== 'skill' || !isRecord(event.input)) {
-    return
-  }
-
-  const skillId = event.input.name ?? event.input.id ?? event.input.skill
-  if (typeof skillId === 'string') {
-    exp.skillsUsed.add(skillId)
-  }
-}
-
-function isRecovery(exp: ExperienceState, record: ToolCall): boolean {
-  const previous = exp.toolCalls.at(-2)
-  return (
-    previous?.status === 'error' && record.status === 'success' && previous.tool === record.tool
-  )
-}
+import type { ExperienceState, ExperienceSnapshot, PendingTool, SessionHistory } from './types.ts'
 
 export class ExperienceRecorder {
   private readonly maxEventsPerSession: number
@@ -294,49 +73,50 @@ export class ExperienceRecorder {
   }
 
   toolBefore(event: ToolBeforeEvent): void {
-    if (event.tool === undefined || event.tool.length === 0) {
+    const target = toolBeforeTarget(event)
+    if (target === undefined) {
       return
     }
 
-    const key = toolEventKey(event)
-    if (key === undefined || event.sessionID === undefined) {
+    const tombstones = this.pendingToolTombstones.get(target.sessionId)
+    if (tombstones?.has(target.key)) {
       return
     }
 
-    const tombstones = this.pendingToolTombstones.get(event.sessionID)
-    if (tombstones?.has(key)) {
-      return
-    }
-
-    this.pendingTools.set(key, {
-      [SESSION_ID_KEY]: event.sessionID,
+    this.pendingTools.set(target.key, {
+      [SESSION_ID_KEY]: target.sessionId,
       callId: event.id,
-      tool: event.tool,
+      tool: target.tool ?? '',
       input: trimText(event.input, 2500),
       startedAt: Date.now()
     })
   }
 
   toolAfter(event: ToolAfterEvent): ExperienceState | undefined {
-    const key = toolEventKey(event)
-    if (key === undefined || event.sessionID === undefined || event.tool === undefined) {
+    const target = toolAfterTarget(event)
+    if (target === undefined) {
       return undefined
     }
 
-    const pending = this.pendingTools.get(key)
-    if (pending) {
-      this.pendingTools.delete(key)
-    } else {
-      const tombstones = this.pendingToolTombstones.get(event.sessionID)
-      if (tombstones?.has(key)) {
-        return undefined
-      }
+    const lookup = consumePendingTool(
+      this.pendingTools,
+      this.pendingToolTombstones.get(target.sessionId),
+      target.key
+    )
+    if (lookup.isIgnored) {
+      return undefined
     }
 
-    const exp = this.get(event.sessionID)
+    const exp = this.get(target.sessionId)
     const status = toolStatus(event.status)
-    const input = pending?.input ?? trimText(extractText(event.input), 2500)
-    const record = createToolCall({ event, turn: exp.turn, input, status, pending })
+    const input = lookup.pending?.input ?? trimText(extractText(event.input), 2500)
+    const record = createToolCall({
+      event,
+      turn: exp.turn,
+      input,
+      status,
+      pending: lookup.pending
+    })
     appendToolCall(exp, record, this.maxEventsPerSession)
     exp.updatedAt = Date.now()
     observeToolCall(exp, event, record)
@@ -353,15 +133,8 @@ export class ExperienceRecorder {
       return undefined
     }
 
-    if (eventID !== undefined && eventID !== null && eventID !== '') {
-      let seen = this.terminalEventIds.get(sessionID)
-      if (seen?.has(eventID)) {
-        return undefined
-      }
-
-      seen ??= new Set()
-      seen.add(eventID)
-      this.terminalEventIds.set(sessionID, seen)
+    if (!isNewTerminalEvent(this.terminalEventIds, sessionID, eventID)) {
+      return undefined
     }
 
     const exp = this.get(sessionID)
@@ -442,12 +215,4 @@ export class ExperienceRecorder {
 
     this.pendingToolTombstones.set(sessionID, tombstones)
   }
-}
-
-function toolStatus(status: unknown): ToolCall['status'] {
-  if (status === 'completed' || status === 'success') {
-    return 'success'
-  }
-
-  return status === 'error' ? 'error' : 'unknown'
 }

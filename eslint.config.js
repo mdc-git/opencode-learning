@@ -37,11 +37,27 @@ export default defineConfig([
       boundaries
     },
     rules: {
-      complexity: ['error', 10],
+      complexity: ['error', 6],
       'max-depth': ['error', 3],
       'max-params': ['error', 4],
-      'max-lines-per-function': ['error', 60],
-      'sonarjs/cognitive-complexity': ['error', 12],
+      'max-lines-per-function': ['error', 50],
+      'max-lines': ['error', { max: 300 }],
+      'sonarjs/cognitive-complexity': ['error', 4],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector:
+            'FunctionDeclaration ImportExpression, FunctionExpression ImportExpression, ArrowFunctionExpression ImportExpression, StaticBlock ImportExpression',
+          message:
+            'Do not use dynamic `import()` inside a function. Use a top-level static import instead.'
+        },
+        {
+          selector:
+            'FunctionDeclaration CallExpression[callee.name="require"], FunctionExpression CallExpression[callee.name="require"], ArrowFunctionExpression CallExpression[callee.name="require"], StaticBlock CallExpression[callee.name="require"], FunctionDeclaration CallExpression[callee.object.name="require"], FunctionExpression CallExpression[callee.object.name="require"], ArrowFunctionExpression CallExpression[callee.object.name="require"], StaticBlock CallExpression[callee.object.name="require"]',
+          message:
+            'Do not use `require()` inside a function. Use a top-level static import instead.'
+        }
+      ],
       'import-x/no-cycle': 'error',
       'boundaries/dependencies': [
         'error',

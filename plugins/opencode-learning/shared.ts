@@ -69,20 +69,29 @@ async function assertNoSymlinkComponents(current: string, parts: string[]): Prom
   }
 
   const next = path.join(current, part)
+  const isExisting = await isExistingNonSymlinkComponent(next)
+  if (!isExisting) {
+    return
+  }
+
+  await assertNoSymlinkComponents(next, remaining)
+}
+
+async function isExistingNonSymlinkComponent(file: string): Promise<boolean> {
   try {
-    const stat = await fs.lstat(next)
+    const stat = await fs.lstat(file)
     if (stat.isSymbolicLink()) {
-      throw new Error(`refusing symlink path component: ${next}`)
+      throw new Error(`refusing symlink path component: ${file}`)
     }
   } catch (error: unknown) {
     if (hasErrorCode(error, 'ENOENT')) {
-      return
+      return false
     }
 
     throw error
   }
 
-  await assertNoSymlinkComponents(next, remaining)
+  return true
 }
 
 export async function atomicWrite(file: string, text: string): Promise<void> {
@@ -115,12 +124,19 @@ export function trimText(value: unknown, max = 4e3): string {
     return ''
   }
 
-  const serialized = typeof value === 'string' ? value : JSON.stringify(value)
-  const text = serialized ?? primitiveText(value)
+  const text = stringifyText(value)
   if (text.length <= max) {
     return text
   }
 
+  return truncateText(text, max)
+}
+
+function stringifyText(value: unknown): string {
+  return typeof value === 'string' ? value : (JSON.stringify(value) ?? primitiveText(value))
+}
+
+function truncateText(text: string, max: number): string {
   return `${text.slice(0, max)}\n…[truncated ${text.length - max} chars]`
 }
 
@@ -141,19 +157,14 @@ export function hasCallId(value: unknown): value is string {
 }
 
 function primitiveText(value: unknown): string {
-  if (typeof value === 'string') {
-    return value
-  }
-
-  if (
-    typeof value === 'number' ||
-    typeof value === 'boolean' ||
-    typeof value === 'bigint' ||
-    typeof value === 'symbol' ||
-    typeof value === 'function'
-  ) {
-    return value.toString()
-  }
-
-  return ''
+  return PRIMITIVE_TEXT_TYPES.has(typeof value) ? String(value) : ''
 }
+
+const PRIMITIVE_TEXT_TYPES = new Set([
+  'string',
+  'number',
+  'boolean',
+  'bigint',
+  'symbol',
+  'function'
+])
