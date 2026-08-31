@@ -54,31 +54,17 @@ export async function runReflector({
     title: 'Procedural skill reflection'
   })
   const { id } = session
-  if (id.length === 0) {
-    throw new Error('OpenCode did not return a reflector session id')
-  }
-
-  let isRegistered = false
-  try {
-    mailbox.register(id, 'proposal')
-    isRegistered = true
-    onReflectorStart?.()
-    const callback = mailbox.wait<Proposal>(id, config.reviewerTimeoutMs)
-    void callback.catch(() => undefined)
-    await promptSession(ctx, id, buildReviewPrompt({ exp, candidates, triggerDecision }))
-    const proposal = await callback
-    if (!mailbox.hasSubmitted(id)) {
-      throw new Error('reflector finished without submitting a proposal')
-    }
-
-    return proposal
-  } finally {
-    if (isRegistered) {
-      mailbox.release(id)
-    }
-
-    await interruptSession(ctx, id)
-  }
+  assertReviewSessionId(id, 'reflector')
+  onReflectorStart?.()
+  return runReviewSession({
+    ctx,
+    mailbox,
+    id,
+    role: 'proposal',
+    timeout: config.reviewerTimeoutMs,
+    prompt: buildReviewPrompt({ exp, candidates, triggerDecision }),
+    missingSubmission: 'reflector finished without submitting a proposal'
+  })
 }
 
 export async function runValidator({
@@ -99,27 +85,59 @@ export async function runValidator({
     title: 'Procedural skill validation'
   })
   const { id } = session
-  if (id.length === 0) {
-    throw new Error('OpenCode did not return a validator session id')
-  }
+  assertReviewSessionId(id, 'validator')
+  return runReviewSession({
+    ctx,
+    mailbox,
+    id,
+    role: 'validation',
+    timeout: config.reviewerTimeoutMs,
+    prompt: buildValidationPrompt({
+      exp,
+      candidates,
+      proposal,
+      deterministicValidation: deterministic
+    }),
+    missingSubmission: 'validator finished without submitting a validation'
+  })
+}
 
+function assertReviewSessionId(id: string, role: string): void {
+  if (id.length === 0) {
+    throw new Error(`OpenCode did not return a ${role} session id`)
+  }
+}
+
+async function runReviewSession<T>({
+  ctx,
+  mailbox,
+  id,
+  role,
+  timeout,
+  prompt,
+  missingSubmission
+}: {
+  ctx: OpenCodeContext
+  mailbox: InternalMailbox
+  id: string
+  role: 'proposal' | 'validation'
+  timeout: number
+  prompt: string
+  missingSubmission: string
+}): Promise<T> {
   let isRegistered = false
   try {
-    mailbox.register(id, 'validation')
+    mailbox.register(id, role)
     isRegistered = true
-    const callback = mailbox.wait<ValidationSubmission>(id, config.reviewerTimeoutMs)
+    const callback = mailbox.wait<T>(id, timeout)
     void callback.catch(() => undefined)
-    await promptSession(
-      ctx,
-      id,
-      buildValidationPrompt({ exp, candidates, proposal, deterministicValidation: deterministic })
-    )
-    const validation = await callback
+    await promptSession(ctx, id, prompt)
+    const result = await callback
     if (!mailbox.hasSubmitted(id)) {
-      throw new Error('validator finished without submitting a validation')
+      throw new Error(missingSubmission)
     }
 
-    return validation
+    return result
   } finally {
     if (isRegistered) {
       mailbox.release(id)

@@ -46,13 +46,16 @@ function canonicalSkillId(value: unknown): string {
 }
 
 export function normalizeCreateProposal(proposal: Proposal): Proposal {
-  if (proposal?.decision !== 'create') {
+  if (proposal.decision !== 'create') {
     return proposal
   }
 
+  return { ...proposal, skillId: normalizedProposalSkillId(proposal) }
+}
+
+function normalizedProposalSkillId(proposal: Proposal): string {
   const requestedId = canonicalSkillId(proposal.skillId)
-  const skillId = requestedId.length > 0 ? requestedId : canonicalSkillId(proposal.skill?.name)
-  return { ...proposal, skillId }
+  return requestedId.length > 0 ? requestedId : canonicalSkillId(proposal.skill?.name)
 }
 
 export async function assertNoSymlinkPath(file: string): Promise<void> {
@@ -120,6 +123,10 @@ export async function writeJson(file: string, value: unknown): Promise<void> {
 }
 
 export function trimText(value: unknown, max = 4e3): string {
+  return trimTextAt(value, max)
+}
+
+function trimTextAt(value: unknown, max: number): string {
   if (value === null || value === undefined) {
     return ''
   }

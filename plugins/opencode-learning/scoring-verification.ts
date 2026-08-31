@@ -43,20 +43,25 @@ type PythonStep =
   { kind: 'return'; value: string } | { kind: 'continue'; nextIndex: number } | { kind: 'invalid' }
 
 function isPythonVerificationOption(argument: string): boolean {
-  if (argument === '--' || argument === '-c' || !argument.startsWith('-')) {
+  if (!argument.startsWith('-')) {
     return false
   }
 
-  return PYTHON_OPTION_VALUES.has(argument) || PYTHON_OPTION_FLAGS.has(argument)
+  return isKnownPythonOption(argument)
+}
+
+function isKnownPythonOption(argument: string): boolean {
+  return (
+    argument !== '--' &&
+    argument !== '-c' &&
+    (PYTHON_OPTION_VALUES.has(argument) || PYTHON_OPTION_FLAGS.has(argument))
+  )
 }
 
 function pythonVerificationStep(args: string[], index: number): PythonStep {
   const argument = args[index]
   if (argument === '-m') {
-    return {
-      kind: 'return',
-      value: args[index + 1]?.toLowerCase() === 'pytest' ? 'python pytest' : ''
-    }
+    return pythonModuleStep(args[index + 1])
   }
 
   if (!isPythonVerificationOption(argument)) {
@@ -65,11 +70,23 @@ function pythonVerificationStep(args: string[], index: number): PythonStep {
 
   return {
     kind: 'continue',
-    nextIndex: index + 1 + Number(PYTHON_OPTION_VALUES.has(argument))
+    nextIndex: pythonOptionNextIndex(argument, index)
   }
 }
 
-function pythonVerification(args: string[], index = 0): string {
+function pythonModuleStep(module: string | undefined): PythonStep {
+  return { kind: 'return', value: module?.toLowerCase() === 'pytest' ? 'python pytest' : '' }
+}
+
+function pythonOptionNextIndex(argument: string, index: number): number {
+  return index + 1 + Number(PYTHON_OPTION_VALUES.has(argument))
+}
+
+function pythonVerification(args: string[]): string {
+  return pythonVerificationAt(args, 0)
+}
+
+function pythonVerificationAt(args: string[], index: number): string {
   if (index >= args.length) {
     return ''
   }
@@ -79,7 +96,7 @@ function pythonVerification(args: string[], index = 0): string {
     return step.value
   }
 
-  return step.kind === 'invalid' ? '' : pythonVerification(args, step.nextIndex)
+  return step.kind === 'invalid' ? '' : pythonVerificationAt(args, step.nextIndex)
 }
 
 function firstVerification(
@@ -88,9 +105,22 @@ function firstVerification(
   allowed: Set<string>,
   label = executable
 ): string {
+  const command = allowedCommand(args, executable, allowed)
+  return command === undefined ? '' : `${label} ${command}`
+}
+
+function allowedCommand(
+  args: string[],
+  executable: string,
+  allowed: Set<string>
+): string | undefined {
   const first = firstCommandWord(args, 0, optionSpecFor(executable))
-  const command = first?.value.toLowerCase()
-  return command !== undefined && allowed.has(command) ? `${label} ${command}` : ''
+  if (first === undefined) {
+    return undefined
+  }
+
+  const command = first.value.toLowerCase()
+  return allowed.has(command) ? command : undefined
 }
 
 function positionalVerification(args: string[], executable: string, allowed: Set<string>): string {
@@ -142,12 +172,16 @@ export function isRecognizedVerification(command: string): boolean {
   }
 
   const tokens = shellTokens(command)
-  if (tokens.length === 0 || tokens.some((token) => CONTROL_FLOW_TOKENS.has(token))) {
+  if (hasInvalidVerificationTokens(tokens)) {
     return false
   }
 
   const segments = commandSegments(tokens)
   return segments.length === 1 && verificationIdentity(segments[0]) !== ''
+}
+
+function hasInvalidVerificationTokens(tokens: string[]): boolean {
+  return tokens.length === 0 || tokens.some((token) => CONTROL_FLOW_TOKENS.has(token))
 }
 
 type SegmentOperation = { operation?: string; skipped?: string }
@@ -169,22 +203,35 @@ function commandSegmentOperation(segment: string[]): SegmentOperation {
     return { operation: verified }
   }
 
+  return { operation: fallbackOperation(unwrapped, executable) }
+}
+
+function fallbackOperation(unwrapped: string[], executable: string): string {
   const first = firstCommandWord(unwrapped.slice(1), 0, optionSpecFor(executable))
-  return { operation: first ? `${executable} ${first.value.toLowerCase()}` : executable }
+  return first === undefined ? executable : `${executable} ${first.value.toLowerCase()}`
 }
 
 export function normalizedCommandOperation(command: string): string {
+  const result = firstCommandOperation(command)
+  return result.operation ?? result.skipped ?? 'command'
+}
+
+function firstCommandOperation(command: string): SegmentOperation {
   let skippedExecutable
   for (const segment of commandSegments(shellTokens(command))) {
     const result = commandSegmentOperation(segment)
     if (result.operation !== undefined) {
-      return result.operation
+      return { operation: result.operation }
     }
 
-    skippedExecutable ??= result.skipped
+    skippedExecutable = firstDefined(skippedExecutable, result.skipped)
   }
 
-  return skippedExecutable ?? 'command'
+  return { skipped: skippedExecutable }
+}
+
+function firstDefined(first: string | undefined, second: string | undefined): string | undefined {
+  return first ?? second
 }
 
 export function isExecutionTool(tool: string): boolean {

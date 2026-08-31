@@ -14,6 +14,34 @@ import {
   recordTriggerSignals
 } from './telemetry-triggers.ts'
 
+function hasExperienceFailures(exp: ExperienceSnapshot): boolean {
+  return exp.toolCalls?.some((x) => x.status === 'error') ?? false
+}
+
+function experienceSkills(exp: ExperienceSnapshot): string[] {
+  return exp.skillsUsed ?? []
+}
+
+function triggerStatsFor(state: TelemetryState): TriggerStats {
+  state.triggerStats ??= defaultTriggerStats()
+  return state.triggerStats
+}
+
+const TRIGGER_OUTCOME_UPDATES: Record<string, (stats: TriggerStats) => void> = {
+  staged(stats) {
+    stats.accepted += 1
+  },
+  applied(stats) {
+    stats.accepted += 1
+  },
+  'no-change'(stats) {
+    stats.noChange += 1
+  },
+  error(stats) {
+    stats.errors += 1
+  }
+}
+
 export { normalizeTelemetryState } from './telemetry-state.ts'
 export type { SkillTelemetry } from './telemetry-state.ts'
 
@@ -138,8 +166,8 @@ export class Telemetry {
   }
 
   async recordExperience(exp: ExperienceSnapshot): Promise<void> {
-    const isFailures = exp.toolCalls?.some((x) => x.status === 'error') ?? false
-    for (const id of exp.skillsUsed ?? []) {
+    const isFailures = hasExperienceFailures(exp)
+    for (const id of experienceSkills(exp)) {
       const s = this.skill(id)
       recordSkillExperience(s, exp, isFailures)
     }
@@ -180,8 +208,7 @@ export class Telemetry {
     score?: number
     strongSignals?: string[]
   } = {}): Promise<void> {
-    this.state.triggerStats ??= defaultTriggerStats()
-    const stats = this.state.triggerStats
+    const stats = triggerStatsFor(this.state)
     recordTriggerDecision(stats, decision)
     recordScoreBucket(stats, score)
     recordTriggerSignals(stats, strongSignals)
@@ -190,29 +217,9 @@ export class Telemetry {
   }
 
   async recordTriggerOutcome(decision: string): Promise<void> {
-    this.state.triggerStats ??= defaultTriggerStats()
-    const stats = this.state.triggerStats
-    switch (decision) {
-      case 'staged':
-      case 'applied': {
-        stats.accepted += 1
-        break
-      }
-
-      case 'no-change': {
-        stats.noChange += 1
-        break
-      }
-
-      case 'error': {
-        stats.errors += 1
-
-        break
-      }
-
-      default: {
-        break
-      }
+    const update = TRIGGER_OUTCOME_UPDATES[decision]
+    if (update !== undefined) {
+      update(triggerStatsFor(this.state))
     }
 
     return this.flush()

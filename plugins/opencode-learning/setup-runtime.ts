@@ -56,7 +56,20 @@ export function terminalDirectory(
   session: SessionInfo,
   sessionDirectories: Map<string, string>
 ): string | undefined {
-  const directory =
+  return nonEmptyDirectory(eventDirectory(event, session, sessionDirectories, sessionID))
+}
+
+function eventDirectory(
+  event: TerminalEvent,
+  session: SessionInfo,
+  sessionDirectories: Map<string, string>,
+  sessionID: string
+): string | undefined {
+  return (
     event.location?.directory ?? session.location.directory ?? sessionDirectories.get(sessionID)
+  )
+}
+
+function nonEmptyDirectory(directory: string | undefined): string | undefined {
   return directory === undefined || directory.length === 0 ? undefined : directory
 }

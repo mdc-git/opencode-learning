@@ -27,13 +27,10 @@ export class Curator {
   }
 
   async maybeRun({ force = false }: { force?: boolean } = {}): Promise<CuratorResult> {
-    if (!this.config.curator.enabled) {
-      return { skipped: 'disabled' }
-    }
-
     const state = await readJson(this.stateFile, { lastRunAt: 0 })
-    if (isCurationIntervalActive(state.lastRunAt, force, this.config.curator.checkEveryHours)) {
-      return { skipped: 'interval' }
+    const skip = curationSkip(this.config, state.lastRunAt, force)
+    if (skip !== undefined) {
+      return { skipped: skip }
     }
 
     const curationResult = await this.run()
@@ -54,6 +51,20 @@ export class Curator {
     await this.telemetry.flush()
     return { stale, archived }
   }
+}
+
+function curationSkip(
+  config: LearningConfig,
+  lastRunAt: number,
+  isForced: boolean
+): 'disabled' | 'interval' | undefined {
+  if (!config.curator.enabled) {
+    return 'disabled'
+  }
+
+  return isCurationIntervalActive(lastRunAt, isForced, config.curator.checkEveryHours)
+    ? 'interval'
+    : undefined
 }
 
 function isCurationIntervalActive(
@@ -77,7 +88,15 @@ async function curateOwnedSkill(
 }
 
 function skillAge(meta: SkillTelemetry | undefined): number {
-  return daysSince(meta?.updatedAt ?? meta?.createdAt ?? Date.now())
+  return daysSince(skillTimestamp(meta))
+}
+
+function skillTimestamp(meta: SkillTelemetry | undefined): number {
+  if (meta === undefined) {
+    return Date.now()
+  }
+
+  return meta.updatedAt ?? meta.createdAt ?? Date.now()
 }
 
 async function curateByAge({

@@ -73,29 +73,33 @@ function addReviewTool(
         additionalProperties: false
       },
       output: objectOutput(),
-      async execute({ force = false }: ReviewInput, toolCtx: ToolContext) {
+      async execute(input: ReviewInput, toolCtx: ToolContext) {
+        const isForce = input.force ?? false
         const session = await foregroundSessionFor(toolCtx.sessionID)
         if (session === undefined) {
           return result(
-            { scheduled: false, force, reason: 'foreground sessions only' },
+            { scheduled: false, force: isForce, reason: 'foreground sessions only' },
             'Learning review is available only for foreground sessions.'
           )
         }
 
         const { pipeline } = await runtimeForSession(toolCtx.sessionID, session)
-        const scheduled = pipeline.schedule(toolCtx.sessionID, { force })
-        return result(
-          scheduled,
-          scheduled.scheduled === true
-            ? force
-              ? 'Forced learning review scheduled after this turn.'
-              : 'Learning review scheduled after this turn.'
-            : 'Learning review was not scheduled.'
-        )
+        const scheduled = pipeline.schedule(toolCtx.sessionID, { force: isForce })
+        return result(scheduled, reviewScheduleMessage(scheduled.scheduled === true, isForce))
       }
     },
     { namespace: 'learning', codemode: false }
   )
+}
+
+function reviewScheduleMessage(isScheduled: boolean, isForce: boolean): string {
+  if (!isScheduled) {
+    return 'Learning review was not scheduled.'
+  }
+
+  return isForce
+    ? 'Forced learning review scheduled after this turn.'
+    : 'Learning review scheduled after this turn.'
 }
 
 function addApplyTool(

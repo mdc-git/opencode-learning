@@ -7,19 +7,27 @@ function optionName(token: string): string {
 
 export function optionKind(token: string, spec: OptionSpec): 'value' | 'flag' | 'unknown' {
   const name = optionName(token)
-  if (
-    spec.values.has(token) ||
-    spec.values.has(name) ||
-    spec.prefixes.some((prefix) => token.startsWith(prefix) && token.length > prefix.length)
-  ) {
+  if (isValueOption(token, name, spec)) {
     return 'value'
   }
 
-  if (spec.flags.has(token) || spec.flags.has(name)) {
+  if (isFlagOption(token, name, spec)) {
     return 'flag'
   }
 
   return 'unknown'
+}
+
+function isValueOption(token: string, name: string, spec: OptionSpec): boolean {
+  return (
+    spec.values.has(token) ||
+    spec.values.has(name) ||
+    spec.prefixes.some((prefix) => token.startsWith(prefix) && token.length > prefix.length)
+  )
+}
+
+function isFlagOption(token: string, name: string, spec: OptionSpec): boolean {
+  return spec.flags.has(token) || spec.flags.has(name)
 }
 
 export function isOptionValueAttached(token: string, spec: OptionSpec): boolean {
@@ -127,13 +135,20 @@ function consumePositionalToken(
     return undefined
   }
 
-  if (item.words !== undefined) {
-    words.push(...item.words)
-  } else if (item.word !== undefined) {
-    words.push(item.word)
-  }
+  appendPositionalWords(item, words)
 
   return item.done ? POSITIONAL_DONE : item.nextIndex
+}
+
+function appendPositionalWords(item: PositionalToken, words: string[]): void {
+  if (item.words !== undefined) {
+    words.push(...item.words)
+    return
+  }
+
+  if (item.word !== undefined) {
+    words.push(item.word)
+  }
 }
 
 export function positionalCommandWords(tokens: string[], spec: OptionSpec): string[] | undefined {

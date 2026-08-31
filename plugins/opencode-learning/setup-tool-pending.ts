@@ -8,34 +8,53 @@ async function pendingAction(
   id: string | undefined
 ) {
   if (action === 'list') {
-    const pending = await store.listPending()
-    const compact = pending.map((item) => ({
-      id: item.id,
-      decision: item.proposal?.decision,
-      skillId: item.proposal?.skillId,
-      scope: item.proposal?.scope,
-      reason: item.proposal?.reason,
-      confidence: item.proposal?.confidence,
-      validation: item.validation
-    }))
-    return result({ pending: compact }, JSON.stringify(compact, null, 2))
+    return listPendingResult(store)
   }
 
-  if (id === undefined || id.length === 0) {
-    throw new Error('id is required for show/apply/reject')
-  }
+  const pendingId = requirePendingId(id)
 
   if (action === 'show') {
-    const pending = await store.getPending(id)
+    const pending = await store.getPending(pendingId)
     return result(pending, JSON.stringify(pending, null, 2))
   }
 
   if (action === 'reject') {
-    await store.rejectPending(id)
-    return result({ rejected: id }, `Rejected ${id}.`)
+    await store.rejectPending(pendingId)
+    return result({ rejected: pendingId }, `Rejected ${pendingId}.`)
   }
 
   throw new Error('unsupported pending action')
+}
+
+async function listPendingResult(store: SkillStore) {
+  const pending = await store.listPending()
+  const compact = pending.map((item) => compactPending(item))
+  return result({ pending: compact }, JSON.stringify(compact, null, 2))
+}
+
+function compactPending(item: Awaited<ReturnType<SkillStore['listPending']>>[number]) {
+  const { proposal } = item
+  if (proposal === undefined) {
+    return { id: item.id, validation: item.validation }
+  }
+
+  return {
+    id: item.id,
+    decision: proposal.decision,
+    skillId: proposal.skillId,
+    scope: proposal.scope,
+    reason: proposal.reason,
+    confidence: proposal.confidence,
+    validation: item.validation
+  }
+}
+
+function requirePendingId(id: string | undefined): string {
+  if (id === undefined || id.length === 0) {
+    throw new Error('id is required for show/apply/reject')
+  }
+
+  return id
 }
 
 export function addPendingTool(add: AddLearningTool, runtimeForSession: SessionRuntimeFor): void {

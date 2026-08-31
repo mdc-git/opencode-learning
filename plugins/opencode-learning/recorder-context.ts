@@ -1,5 +1,6 @@
 import { isExplicitCorrection } from './scoring.ts'
 import { isRecord, sha256, trimText } from './shared.ts'
+import type { ContextEvent } from './sdk.ts'
 import type { ContextTailItem, ExperienceState, SessionHistory, UnknownRecord } from './types.ts'
 
 export function extractText(value: unknown, depth = 0): string {
@@ -7,10 +8,14 @@ export function extractText(value: unknown, depth = 0): string {
     return ''
   }
 
-  if (typeof value === 'string') {
-    return value
-  }
+  return scalarText(value) ?? extractStructuredText(value, depth)
+}
 
+function scalarText(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function extractStructuredText(value: unknown, depth: number): string {
   if (Array.isArray(value)) {
     return extractTextArray(value, depth)
   }
@@ -57,6 +62,10 @@ function extractTypedText(value: UnknownRecord, depth: number): string | undefin
     return directText
   }
 
+  return nestedTypedText(value, type, depth)
+}
+
+function nestedTypedText(value: UnknownRecord, type: string, depth: number): string | undefined {
   if (type === 'tool-result') {
     return extractToolResultText(value.result, depth)
   }
@@ -75,12 +84,20 @@ function extractDirectTypedText(value: UnknownRecord, type: string): string | un
 }
 
 function extractToolResultText(value: unknown, depth: number): string | undefined {
-  if (!isRecord(value) || value.value === null || value.value === undefined) {
+  const resultValue = toolResultValue(value)
+  if (resultValue === undefined) {
     return undefined
   }
 
-  const { value: resultValue } = value
   return typeof resultValue === 'string' ? resultValue : extractText(resultValue, depth + 1)
+}
+
+function toolResultValue(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  return value.value ?? undefined
 }
 
 function extractToolCallText(value: unknown, depth: number): string | undefined {
@@ -105,6 +122,18 @@ function messageRole(message: unknown): string | undefined {
   }
 
   return message.role
+}
+
+export function contextSessionId(event: ContextEvent): string {
+  const context = event as unknown as { sessionID?: unknown }
+  const sessionId = context.sessionID
+  return typeof sessionId === 'string' ? sessionId : ''
+}
+
+export function contextMessages(event: ContextEvent): unknown[] {
+  const context = event as unknown as { messages?: unknown }
+  const { messages } = context
+  return Array.isArray(messages) ? messages : []
 }
 
 export function normalizeContextMessages(messages: unknown[]): ContextTailItem[] {

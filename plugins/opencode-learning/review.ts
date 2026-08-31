@@ -19,6 +19,7 @@ import {
 import { validateProposal } from './store.ts'
 import type { TriggerDecision } from './scoring.ts'
 import type { ExperienceSnapshot, Proposal, ValidationSubmission } from './types.ts'
+import type { OpenCodeContext, SessionInfo } from './sdk.ts'
 import type {
   ReviewAttempt,
   ReviewAttemptOptions,
@@ -65,8 +66,7 @@ export class ReviewPipeline extends ReviewScheduling {
     onReflectorStart: (() => void) | undefined
   ): Promise<ReviewPreparation> {
     const parent = await this.ctx.session.get({ [SESSION_ID_KEY]: sessionID })
-    const directory = parent?.location?.directory ?? this.store.projectRoot
-    const model = parent?.model
+    const { directory, model } = reviewParent(parent, this.store.projectRoot)
     const candidates = await retrieveCandidates({
       ctx: this.ctx,
       exp,
@@ -107,12 +107,9 @@ export class ReviewPipeline extends ReviewScheduling {
   async reviewWithRetry(
     sessionID: string,
     exp: ExperienceSnapshot,
-    {
-      force = false,
-      terminalType = 'session.execution.succeeded',
-      triggerDecision
-    }: ReviewOptions = {}
+    options: ReviewOptions = {}
   ): Promise<ReviewOutcome> {
+    const { force, terminalType, triggerDecision } = reviewOptions(options)
     if (this.isUnavailable(sessionID)) {
       return { status: 'skipped' }
     }
@@ -253,5 +250,39 @@ export class ReviewPipeline extends ReviewScheduling {
   async waitForReviews(): Promise<void> {
     await Promise.allSettled(this.activeReviews)
     this.activeReviews.clear()
+  }
+}
+
+function reviewParent(
+  parent: SessionInfo | undefined,
+  projectRoot: string
+): { directory: string; model: SessionInfo['model'] | undefined } {
+  return {
+    directory: reviewDirectory(parent, projectRoot),
+    model: reviewModel(parent)
+  }
+}
+
+function reviewDirectory(parent: SessionInfo | undefined, projectRoot: string): string {
+  if (parent === undefined) {
+    return projectRoot
+  }
+
+  return parent.location?.directory ?? projectRoot
+}
+
+function reviewModel(parent: SessionInfo | undefined): SessionInfo['model'] | undefined {
+  return parent?.model
+}
+
+function reviewOptions(options: ReviewOptions): {
+  force: boolean
+  terminalType: string
+  triggerDecision: TriggerDecision | undefined
+} {
+  return {
+    force: options.force ?? false,
+    terminalType: options.terminalType ?? 'session.execution.succeeded',
+    triggerDecision: options.triggerDecision
   }
 }

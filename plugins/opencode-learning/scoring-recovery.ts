@@ -8,11 +8,7 @@ type RecoveryState = {
 }
 
 function addRecoveryPair(success: EnrichedCall, calls: EnrichedCall[], state: RecoveryState): void {
-  if (
-    !success.isSuccess ||
-    success.kind === 'inspect' ||
-    state.pairedSuccesses.has(success.index)
-  ) {
+  if (!canPairSuccess(success, state)) {
     return
   }
 
@@ -22,6 +18,12 @@ function addRecoveryPair(success: EnrichedCall, calls: EnrichedCall[], state: Re
     state.pairedSuccesses.add(success.index)
     state.pairs.push({ failure, success })
   }
+}
+
+function canPairSuccess(success: EnrichedCall, state: RecoveryState): boolean {
+  return (
+    success.isSuccess && success.kind !== 'inspect' && !state.pairedSuccesses.has(success.index)
+  )
 }
 
 export function recoveryPairs(calls: EnrichedCall[]): {
@@ -90,13 +92,27 @@ function isRecoveryMatch(
   nonInspectionCalls: number
 ): boolean {
   return (
+    isCandidateFailure(candidate, pairedFailures, nonInspectionCalls) &&
+    isSameOperation(candidate, success) &&
+    candidate.inputFingerprint !== success.inputFingerprint
+  )
+}
+
+function isCandidateFailure(
+  candidate: EnrichedCall,
+  pairedFailures: Set<number>,
+  nonInspectionCalls: number
+): boolean {
+  return (
     candidate.isFailure &&
     candidate.kind !== 'inspect' &&
     !pairedFailures.has(candidate.index) &&
-    nonInspectionCalls <= 2 &&
-    candidate.operationFingerprint === success.operationFingerprint &&
-    candidate.inputFingerprint !== success.inputFingerprint
+    nonInspectionCalls <= 2
   )
+}
+
+function isSameOperation(candidate: EnrichedCall, success: EnrichedCall): boolean {
+  return candidate.operationFingerprint === success.operationFingerprint
 }
 
 export function addRecoverySignals(

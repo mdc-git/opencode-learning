@@ -28,15 +28,23 @@ export async function recordReviewResult({
 }
 
 export function summarizeNoChange(proposal: Proposal, validation: ReviewValidation): string {
-  if (proposal?.decision === 'none') {
+  if (isNoChangeProposal(proposal)) {
     return noChangeProposalReason(proposal.reason)
   }
 
-  if (!validation?.deterministic?.ok) {
+  if (isInvalidValidation(validation)) {
     return validationErrors(validation)
   }
 
   return rejectedReason(validation)
+}
+
+function isNoChangeProposal(proposal: Proposal): boolean {
+  return proposal.decision === 'none'
+}
+
+function isInvalidValidation(validation: ReviewValidation): boolean {
+  return !validation.deterministic.ok
 }
 
 function noChangeProposalReason(reason: string | undefined): string {

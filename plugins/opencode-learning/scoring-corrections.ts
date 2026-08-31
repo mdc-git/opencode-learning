@@ -122,7 +122,7 @@ function correctionDetails(item: unknown): CorrectionDetails | undefined {
 }
 
 function recordCorrectionDetails(item: UnknownRecord): CorrectionDetails | undefined {
-  const text = item.text ?? item.message ?? item.correction
+  const text = correctionText(item)
   if (!hasCorrectionDetails(item, text)) {
     return undefined
   }
@@ -131,9 +131,17 @@ function recordCorrectionDetails(item: UnknownRecord): CorrectionDetails | undef
     fingerprint: item.fingerprint,
     text,
     turn: turnValue(item),
-    index: numericValue(item.index ?? item.toolIndex ?? item.order),
+    index: numericValue(correctionIndex(item)),
     at: numericValue(item.at)
   }
+}
+
+function correctionText(item: UnknownRecord): unknown {
+  return item.text ?? item.message ?? item.correction
+}
+
+function correctionIndex(item: UnknownRecord): unknown {
+  return item.index ?? item.toolIndex ?? item.order
 }
 
 function hasCorrectionDetails(item: UnknownRecord, text: unknown): boolean {
@@ -149,15 +157,20 @@ function primitiveCorrectionDetails(item: unknown): CorrectionDetails | undefine
 }
 
 export function numericValue(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value
+  return finiteNumberValue(value) ?? finiteNumericString(value)
+}
+
+function finiteNumberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function finiteNumericString(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined
   }
 
-  if (typeof value === 'string' && value.trim().length > 0 && Number.isFinite(Number(value))) {
-    return Number(value)
-  }
-
-  return undefined
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
 }
 
 export function correctionSignals(experience: Experience): CorrectionSignal[] {

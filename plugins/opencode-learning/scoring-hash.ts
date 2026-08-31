@@ -25,7 +25,7 @@ function serializeStructuredValue(value: StructuredValue, seen: Set<unknown>): s
     .join(',')}}`
 }
 
-function stableSerialize(value: unknown, seen = new Set<unknown>()): string {
+function stableSerialize(value: unknown, seen: Set<unknown>): string {
   const primitive = serializePrimitive(value)
   if (primitive !== undefined) {
     return primitive
@@ -46,7 +46,7 @@ function stableSerialize(value: unknown, seen = new Set<unknown>()): string {
 }
 
 export function stableHash(value: unknown): string {
-  return createHash('sha256').update(stableSerialize(value)).digest('hex')
+  return createHash('sha256').update(stableSerialize(value, new Set())).digest('hex')
 }
 
 export function isSha256(value: unknown): value is string {
@@ -59,7 +59,7 @@ export function safeSignalHash(value: unknown): string {
 }
 
 export function normalizedTarget(value: unknown): string {
-  if (value === undefined || value === null || (typeof value === 'string' && value.length === 0)) {
+  if (isEmptyTarget(value)) {
     return ''
   }
 
@@ -67,10 +67,18 @@ export function normalizedTarget(value: unknown): string {
     return value.normalize('NFKC').trim().replaceAll('\\', '/')
   }
 
-  return stableSerialize(value)
+  return stableSerialize(value, new Set())
 }
 
-export function normalizeForComparison(value: unknown, seen = new Set<unknown>()): unknown {
+function isEmptyTarget(value: unknown): boolean {
+  return value === undefined || value === null || (typeof value === 'string' && value.length === 0)
+}
+
+export function normalizeForComparison(value: unknown): unknown {
+  return normalizeComparison(value, new Set())
+}
+
+function normalizeComparison(value: unknown, seen: Set<unknown>): unknown {
   if (typeof value === 'string') {
     return value.normalize('NFKC').replaceAll('\r\n', '\n').trim()
   }
@@ -91,14 +99,14 @@ export function normalizeForComparison(value: unknown, seen = new Set<unknown>()
 
 function normalizeComparableObject(value: StructuredValue, seen: Set<unknown>): unknown {
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeForComparison(item, seen))
+    return value.map((item) => normalizeComparison(item, seen))
   }
 
   const record = value
   return Object.fromEntries(
     Object.keys(record)
       .toSorted()
-      .map((key) => [key, normalizeForComparison(record[key], seen)])
+      .map((key) => [key, normalizeComparison(record[key], seen)])
   )
 }
 

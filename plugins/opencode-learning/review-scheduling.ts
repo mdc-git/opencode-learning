@@ -100,24 +100,19 @@ export abstract class ReviewScheduling {
       return { scheduled: false, force, reason: 'session is not eligible for review' }
     }
 
-    const request = this.requests.get(sessionID) ?? { force: false }
-    request.force ||= force
-    this.requests.set(sessionID, request)
-    return { scheduled: true, force: request.force }
+    return scheduleRequest(this.requests, sessionID, force)
   }
 
   isSchedulable(sessionID: string): boolean {
     return sessionID.length > 0 && !this.disposed && !this.mailbox.isInternalSession(sessionID)
   }
 
-  executionFinished(
-    sessionID: string,
-    { terminalType = 'session.execution.succeeded' }: { terminalType?: string } = {}
-  ): void {
+  executionFinished(sessionID: string, options?: { terminalType?: string }): void {
     if (isReviewSessionUnavailable(sessionID, this.disposed, this.mailbox)) {
       return
     }
 
+    const terminalType = executionTerminalType(options)
     const isSucceeded = terminalType === 'session.execution.succeeded'
     this.recordSuccessfulTurn(sessionID, isSucceeded)
     const isForced = this.consumeReviewRequest(sessionID)
@@ -154,10 +149,8 @@ export abstract class ReviewScheduling {
     })
   }
 
-  start(
-    sessionID: string,
-    { force = false, terminalType = 'session.execution.succeeded' }: ReviewOptions = {}
-  ): void {
+  start(sessionID: string, options: ReviewOptions = {}): void {
+    const { force, terminalType } = normalizedReviewOptions(options)
     if (
       !canStartReview({
         [SESSION_ID_KEY]: sessionID,
@@ -217,5 +210,32 @@ export abstract class ReviewScheduling {
 
     this.pending.delete(sessionID)
     this.start(sessionID, pending)
+  }
+}
+
+function scheduleRequest(
+  requests: Map<string, ReviewRequest>,
+  sessionID: string,
+  isForced: boolean
+): Record<string, unknown> {
+  const request = requests.get(sessionID) ?? { force: false }
+  request.force ||= isForced
+  requests.set(sessionID, request)
+  return { scheduled: true, force: request.force }
+}
+
+function executionTerminalType(options: { terminalType?: string } | undefined): string {
+  return options?.terminalType ?? 'session.execution.succeeded'
+}
+
+function normalizedReviewOptions(options: ReviewOptions): {
+  force: boolean
+  terminalType: string
+  triggerDecision: TriggerDecision | undefined
+} {
+  return {
+    force: options.force ?? false,
+    terminalType: options.terminalType ?? 'session.execution.succeeded',
+    triggerDecision: options.triggerDecision
   }
 }

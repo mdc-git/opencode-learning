@@ -63,14 +63,32 @@ export function observeToolCall(
 }
 
 function recordSkillUse(exp: ExperienceState, event: ToolAfterEvent): void {
-  if (event.tool !== 'skill' || !isRecord(event.input)) {
+  const skillId = skillIdForEvent(event)
+  if (skillId === undefined) {
     return
   }
 
-  const skillId = event.input.name ?? event.input.id ?? event.input.skill
-  if (typeof skillId === 'string') {
-    exp.skillsUsed.add(skillId)
+  exp.skillsUsed.add(skillId)
+}
+
+function skillIdForEvent(event: ToolAfterEvent): string | undefined {
+  if (!isSkillEvent(event)) {
+    return undefined
   }
+
+  return skillIdValue(event.input)
+}
+
+function isSkillEvent(
+  event: ToolAfterEvent
+): event is ToolAfterEvent & { input: Record<string, unknown> } {
+  return event.tool === 'skill' && isRecord(event.input)
+}
+
+function skillIdValue(input: Record<string, unknown>): string | undefined {
+  return [input.name, input.id, input.skill].find(
+    (value): value is string => typeof value === 'string'
+  )
 }
 
 function isRecovery(exp: ExperienceState, record: ToolCall): boolean {
@@ -83,21 +101,30 @@ function isRecovery(exp: ExperienceState, record: ToolCall): boolean {
 type ToolTarget = { key: string; sessionId: string; tool?: string }
 
 export function toolBeforeTarget(event: ToolBeforeEvent): ToolTarget | undefined {
-  if (event.tool === undefined || event.tool.length === 0) {
+  if (nonEmptyToolName(event.tool) === undefined) {
     return undefined
   }
 
-  const key = toolEventKey(event)
-  return key === undefined || event.sessionID === undefined
-    ? undefined
-    : { key, sessionId: event.sessionID, tool: event.tool }
+  return toolTarget(event, toolEventKey(event))
+}
+
+function nonEmptyToolName(value: string | undefined): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function toolTarget(
+  event: { sessionID?: string; tool?: string },
+  key: string | undefined
+): ToolTarget | undefined {
+  if (key === undefined || event.sessionID === undefined) {
+    return undefined
+  }
+
+  return { key, sessionId: event.sessionID, tool: event.tool }
 }
 
 export function toolAfterTarget(event: ToolAfterEvent): ToolTarget | undefined {
-  const key = toolEventKey(event)
-  return key === undefined || event.sessionID === undefined || event.tool === undefined
-    ? undefined
-    : { key, sessionId: event.sessionID, tool: event.tool }
+  return toolTarget(event, toolEventKey(event))
 }
 
 type PendingToolLookup = { pending: PendingTool | undefined; isIgnored: boolean }
@@ -114,6 +141,28 @@ export function consumePendingTool(
   }
 
   return { pending: undefined, isIgnored: tombstones?.has(key) ?? false }
+}
+
+export function pendingToolInput(lookup: PendingToolLookup, event: ToolAfterEvent): string {
+  return lookup.pending?.input ?? trimText(extractText(event.input), 2500)
+}
+
+export function isPendingToolTombstone(tombstones: Set<string> | undefined, key: string): boolean {
+  return tombstones?.has(key) ?? false
+}
+
+export function pendingKeysForSession(
+  pendingTools: Map<string, PendingTool>,
+  sessionID: string
+): string[] {
+  const keys: string[] = []
+  for (const [key, pending] of pendingTools) {
+    if (pending.sessionID === sessionID) {
+      keys.push(key)
+    }
+  }
+
+  return keys
 }
 
 export function isNewTerminalEvent(

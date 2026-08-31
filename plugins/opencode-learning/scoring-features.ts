@@ -96,6 +96,20 @@ function workflowRecords(
   calls: EnrichedCall[],
   state: { states: Map<string, boolean> }
 ): { records: WorkflowRecord[]; successfulVerifications: number } {
+  const grouped = groupedCalls(calls)
+
+  const records: WorkflowRecord[] = []
+  let successfulVerifications = 0
+  for (const [key, group] of grouped) {
+    const workflow = workflowForGroup(key, group, state)
+    successfulVerifications += workflow.verifications
+    appendWorkflowRecord(records, workflow.record)
+  }
+
+  return { records, successfulVerifications }
+}
+
+function groupedCalls(calls: EnrichedCall[]): Map<string | undefined, EnrichedCall[]> {
   const grouped = new Map<string | undefined, EnrichedCall[]>()
   for (const call of calls) {
     const key = turnKey(call.turn)
@@ -104,17 +118,13 @@ function workflowRecords(
     grouped.set(key, group)
   }
 
-  const records: WorkflowRecord[] = []
-  let successfulVerifications = 0
-  for (const [key, group] of grouped) {
-    const workflow = workflowForGroup(key, group, state)
-    successfulVerifications += workflow.verifications
-    if (workflow.record) {
-      records.push(workflow.record)
-    }
-  }
+  return grouped
+}
 
-  return { records, successfulVerifications }
+function appendWorkflowRecord(records: WorkflowRecord[], record: WorkflowRecord | undefined): void {
+  if (record !== undefined) {
+    records.push(record)
+  }
 }
 
 function workflowForGroup(
@@ -127,15 +137,32 @@ function workflowForGroup(
   }
 
   const mutationIndex = group.findIndex((call) => call.isSuccess && call.kind === 'mutate')
-  const verifierIndexes = group
+  const verifierIndexes = verificationIndexes(group, mutationIndex)
+  if (!hasWorkflowVerification(mutationIndex, verifierIndexes)) {
+    return { verifications: 0 }
+  }
+
+  return workflowResult(key, group, mutationIndex, verifierIndexes)
+}
+
+function verificationIndexes(group: EnrichedCall[], mutationIndex: number): number[] {
+  return group
     .map((call, index) =>
       index >= mutationIndex && call.isSuccess && call.kind === 'verify' ? index : -1
     )
     .filter((index) => index !== -1)
-  if (mutationIndex === -1 || verifierIndexes.length === 0) {
-    return { verifications: 0 }
-  }
+}
 
+function hasWorkflowVerification(mutationIndex: number, verifierIndexes: number[]): boolean {
+  return mutationIndex !== -1 && verifierIndexes.length > 0
+}
+
+function workflowResult(
+  key: string | undefined,
+  group: EnrichedCall[],
+  mutationIndex: number,
+  verifierIndexes: number[]
+): { record?: WorkflowRecord; verifications: number } {
   const end = verifierIndexes.at(-1)
   if (end === undefined) {
     return { verifications: verifierIndexes.length }
@@ -222,12 +249,7 @@ function addWorkflowSignals(
   records: WorkflowRecord[],
   signalState: { signals: FeatureSignal[]; seen: Set<string> }
 ): number {
-  const workflowTurns = new Map<string, Set<string | undefined>>()
-  for (const workflow of records) {
-    const turns = workflowTurns.get(workflow.fingerprint) ?? new Set<string | undefined>()
-    turns.add(workflow.turn)
-    workflowTurns.set(workflow.fingerprint, turns)
-  }
+  const workflowTurns = workflowTurnGroups(records)
 
   let repeated = 0
   for (const [fingerprint, turns] of workflowTurns) {
@@ -240,4 +262,15 @@ function addWorkflowSignals(
   }
 
   return repeated
+}
+
+function workflowTurnGroups(records: WorkflowRecord[]): Map<string, Set<string | undefined>> {
+  const workflowTurns = new Map<string, Set<string | undefined>>()
+  for (const workflow of records) {
+    const turns = workflowTurns.get(workflow.fingerprint) ?? new Set<string | undefined>()
+    turns.add(workflow.turn)
+    workflowTurns.set(workflow.fingerprint, turns)
+  }
+
+  return workflowTurns
 }

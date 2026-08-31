@@ -1,5 +1,6 @@
 import {
-  extractText,
+  contextMessages,
+  contextSessionId,
   normalizeContextMessages,
   recordContextCorrections,
   updateExperienceGoal
@@ -9,7 +10,10 @@ import {
   consumePendingTool,
   createToolCall,
   isNewTerminalEvent,
+  isPendingToolTombstone,
   observeToolCall,
+  pendingKeysForSession,
+  pendingToolInput,
   toolAfterTarget,
   toolBeforeTarget,
   toolStatus
@@ -28,6 +32,37 @@ export class ExperienceRecorder {
 
   constructor({ maxEventsPerSession = 120 }: { maxEventsPerSession?: number } = {}) {
     this.maxEventsPerSession = maxEventsPerSession
+  }
+
+  private clearSession(sessionID: string): void {
+    this.sessions.delete(sessionID)
+    this.history.delete(sessionID)
+    this.terminalEventIds.delete(sessionID)
+    this.pendingToolTombstones.delete(sessionID)
+    for (const [key, pending] of this.pendingTools) {
+      if (pending.sessionID === sessionID) {
+        this.pendingTools.delete(key)
+      }
+    }
+  }
+
+  private clearAll(): void {
+    this.sessions.clear()
+    this.history.clear()
+    this.pendingTools.clear()
+    this.pendingToolTombstones.clear()
+    this.terminalEventIds.clear()
+  }
+
+  private pendingTombstonesFor(sessionID: string): Set<string> {
+    const existing = this.pendingToolTombstones.get(sessionID)
+    if (existing !== undefined) {
+      return existing
+    }
+
+    const created = new Set<string>()
+    this.pendingToolTombstones.set(sessionID, created)
+    return created
   }
 
   get(sessionID: string): ExperienceState {
@@ -56,14 +91,14 @@ export class ExperienceRecorder {
   }
 
   observeContext(event: ContextEvent): ExperienceState | undefined {
-    const sessionId = event?.sessionID
-    if (sessionId === undefined || sessionId.length === 0) {
+    const sessionId = contextSessionId(event)
+    if (sessionId.length === 0) {
       return undefined
     }
 
     const exp = this.get(sessionId)
     exp.updatedAt = Date.now()
-    const messages = Array.isArray(event.messages) ? event.messages : []
+    const messages = contextMessages(event)
     const tail = normalizeContextMessages(messages).slice(-8)
     exp.contextTail = tail
     const users = tail.filter((x) => x.role === 'user')
@@ -79,7 +114,7 @@ export class ExperienceRecorder {
     }
 
     const tombstones = this.pendingToolTombstones.get(target.sessionId)
-    if (tombstones?.has(target.key)) {
+    if (isPendingToolTombstone(tombstones, target.key)) {
       return
     }
 
@@ -109,7 +144,7 @@ export class ExperienceRecorder {
 
     const exp = this.get(target.sessionId)
     const status = toolStatus(event.status)
-    const input = lookup.pending?.input ?? trimText(extractText(event.input), 2500)
+    const input = pendingToolInput(lookup, event)
     const record = createToolCall({
       event,
       turn: exp.turn,
@@ -168,23 +203,11 @@ export class ExperienceRecorder {
 
   clear(sessionID?: string): void {
     if (sessionID === undefined || sessionID.length === 0) {
-      this.sessions.clear()
-      this.history.clear()
-      this.pendingTools.clear()
-      this.pendingToolTombstones.clear()
-      this.terminalEventIds.clear()
+      this.clearAll()
       return
     }
 
-    this.sessions.delete(sessionID)
-    this.history.delete(sessionID)
-    this.terminalEventIds.delete(sessionID)
-    this.pendingToolTombstones.delete(sessionID)
-    for (const [key, pending] of this.pendingTools) {
-      if (pending.sessionID === sessionID) {
-        this.pendingTools.delete(key)
-      }
-    }
+    this.clearSession(sessionID)
   }
 
   take(sessionID: string): ExperienceSnapshot | undefined {
@@ -198,21 +221,15 @@ export class ExperienceRecorder {
   }
 
   tombstonePendingTools(sessionID: string): void {
-    let tombstones = this.pendingToolTombstones.get(sessionID)
-    for (const [key, pending] of this.pendingTools) {
-      if (pending.sessionID !== sessionID) {
-        continue
-      }
-
-      this.pendingTools.delete(key)
-      tombstones ??= new Set()
-      tombstones.add(key)
-    }
-
-    if (tombstones === undefined || tombstones.size === 0) {
+    const keys = pendingKeysForSession(this.pendingTools, sessionID)
+    if (keys.length === 0) {
       return
     }
 
-    this.pendingToolTombstones.set(sessionID, tombstones)
+    const tombstones = this.pendingTombstonesFor(sessionID)
+    for (const key of keys) {
+      this.pendingTools.delete(key)
+      tombstones.add(key)
+    }
   }
 }

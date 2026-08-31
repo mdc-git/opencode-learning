@@ -31,20 +31,35 @@ function isMode(value: unknown): value is Mode {
   return typeof value === 'string' && ['off', 'suggest', 'auto'].includes(value)
 }
 
-export function loadConfig(options: unknown = {}): LearningConfig {
-  const values = isRecord(options) ? options : {}
-  const mode = isMode(values.mode) ? values.mode : DEFAULTS.mode
-  const curator = {
+function configValues(options: unknown): Record<string, unknown> {
+  return isRecord(options) ? options : {}
+}
+
+function configMode(values: Record<string, unknown>): Mode {
+  return isMode(values.mode) ? values.mode : DEFAULTS.mode
+}
+
+function configCurator(values: Record<string, unknown>): LearningConfig['curator'] {
+  return {
     ...DEFAULTS.curator,
     ...(isRecord(values.curator) && values.curator)
   }
+}
+
+function isNotDisabled(value: unknown): boolean {
+  return value !== false
+}
+
+export function loadConfig(options: unknown = {}): LearningConfig {
+  const values = configValues(options)
+  const mode = configMode(values)
   return {
     ...DEFAULTS,
     ...values,
     mode,
-    curator,
-    enabled: values.enabled !== false && mode !== 'off',
-    agentValidation: values.agentValidation !== false,
-    notify: values.notify !== false
+    curator: configCurator(values),
+    enabled: isNotDisabled(values.enabled) && mode !== 'off',
+    agentValidation: isNotDisabled(values.agentValidation),
+    notify: isNotDisabled(values.notify)
   }
 }

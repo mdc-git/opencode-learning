@@ -1,5 +1,5 @@
 import { notifySession } from './events.ts'
-import { redactError, SESSION_ID_KEY } from './shared.ts'
+import { SESSION_ID_KEY } from './shared.ts'
 import type { OpenCodeContext, SessionInfo } from './sdk.ts'
 import type { SkillStore } from './store.ts'
 import type {
@@ -20,6 +20,7 @@ import type {
   ReviewValidation
 } from './review-types.ts'
 import { recordReviewResult, summarizeNoChange } from './review-result-details.ts'
+import { recordReviewFailure as recordReviewFailureDetails } from './review-failure.ts'
 
 export async function maybeValidateProposal({
   enabled,
@@ -112,33 +113,8 @@ export function createAutomaticReviewStart(telemetry: Telemetry, isForced: boole
   }
 }
 
-export async function recordReviewFailure({
-  telemetry,
-  ctx,
-  sessionID,
-  terminalType,
-  force,
-  score,
-  error,
-  notify
-}: ReviewFailureOptions): Promise<void> {
-  await telemetry
-    .recordReview({
-      [SESSION_ID_KEY]: sessionID,
-      trigger: force ? 'forced' : 'automatic',
-      terminalType,
-      score,
-      decision: 'error',
-      error: redactError(error)
-    })
-    .catch(() => undefined)
-  if (!force) {
-    await telemetry.recordTriggerOutcome('error').catch(console.error)
-  }
-
-  if (force && notify) {
-    await notifySession(ctx, sessionID, `[opencode-learning] Review failed: ${redactError(error)}`)
-  }
+export async function recordReviewFailure(options: ReviewFailureOptions): Promise<void> {
+  return recordReviewFailureDetails(options)
 }
 
 export async function finishReview(options: ReviewResultOptions): Promise<ReviewOutcome> {

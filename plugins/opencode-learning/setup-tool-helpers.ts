@@ -78,7 +78,7 @@ async function recordAppliedOperation(
 }
 
 function sanitize(value: unknown): unknown {
-  if (value === undefined || value === null) {
+  if (isMissingValue(value)) {
     return null
   }
 
@@ -91,6 +91,10 @@ function sanitize(value: unknown): unknown {
   }
 
   return value
+}
+
+function isMissingValue(value: unknown): boolean {
+  return value === undefined || value === null
 }
 
 function sanitizeRecord(value: UnknownRecord): UnknownRecord {

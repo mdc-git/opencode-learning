@@ -19,14 +19,20 @@ function overlapScore(a: unknown, b: unknown): number {
     return 0
   }
 
+  const hits = sharedTokenCount(tokensA, tokensB)
+
+  return hits / Math.sqrt(tokensA.size * tokensB.size)
+}
+
+function sharedTokenCount(first: Set<string>, second: Set<string>): number {
   let hits = 0
-  for (const item of tokensA) {
-    if (tokensB.has(item)) {
+  for (const item of first) {
+    if (second.has(item)) {
       hits++
     }
   }
 
-  return hits / Math.sqrt(tokensA.size * tokensB.size)
+  return hits
 }
 
 function reviewQuery(exp: ExperienceSnapshot): string {
@@ -141,20 +147,27 @@ ${triggerBlock}
 Submit exactly one proposal through learning_submit_proposal. Create and patch decisions must include skillId as lowercase kebab-case with 1-64 characters. For a create, supporting files may be supplied as skill.files. For a patch, addFiles may create new supporting files but must never overwrite an existing supporting file. Do not edit files directly.`
 }
 
+function triggerReasonLines(reasons: Record<string, number>): string {
+  return Object.keys(reasons).length > 0
+    ? Object.entries(reasons)
+        .map(([key, value]) => `- ${key}: ${value}`)
+        .join('\n')
+    : '- (none)'
+}
+
+function triggerSignalText(triggerDecision: TriggerDecision): string {
+  const signalText = (triggerDecision.strongSignals ?? []).join(', ')
+  return signalText.length > 0 ? signalText : 'none'
+}
+
 function formatTriggerSignals(triggerDecision: TriggerDecision | undefined): string {
   if (!triggerDecision) {
     return ''
   }
 
   const reasons = triggerDecision.reasons ?? {}
-  const reasonLines =
-    Object.keys(reasons).length > 0
-      ? Object.entries(reasons)
-          .map(([key, value]) => `- ${key}: ${value}`)
-          .join('\n')
-      : '- (none)'
-  const signalText = (triggerDecision.strongSignals ?? []).join(', ')
-  const signals = signalText.length > 0 ? signalText : 'none'
+  const reasonLines = triggerReasonLines(reasons)
+  const signals = triggerSignalText(triggerDecision)
   return `
 ## Trigger signals
 

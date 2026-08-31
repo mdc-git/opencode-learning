@@ -36,6 +36,15 @@ async function stagePatch(store: StoreOperations, dir: string, proposal: Proposa
     return
   }
 
+  await writePatchPreview(store, dir, proposal, current)
+}
+
+async function writePatchPreview(
+  store: StoreOperations,
+  dir: string,
+  proposal: Proposal,
+  current: OwnedSkill
+): Promise<void> {
   const text = applyOperations(current.text, proposal.operations ?? [])
   const next = bumpVersion(text)
   const writes = [

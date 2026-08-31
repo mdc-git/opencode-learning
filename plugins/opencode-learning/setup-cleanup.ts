@@ -24,13 +24,20 @@ async function cleanupRuntime(runtime: Runtime): Promise<void> {
   await runtime.pipeline.cleanup()
 }
 
-export async function cleanupSetup(context: CleanupContext): Promise<void> {
+function clearCuratorTimer(context: CleanupContext): void {
   if (context.curatorTimer !== undefined) {
     clearInterval(context.curatorTimer)
   }
+}
 
+function removeEventListeners(context: CleanupContext): void {
   context.removeTerminalListener?.()
   context.removeSessionMovedListener?.()
+}
+
+export async function cleanupSetup(context: CleanupContext): Promise<void> {
+  clearCuratorTimer(context)
+  removeEventListeners(context)
   context.isSessionEventsStopped = true
   await Promise.allSettled(context.sessionEventChains.values())
   context.sessionEventChains.clear()

@@ -36,7 +36,13 @@ function operationFromRecord(record: ToolRecord, tool: string, command: string):
     return normalizedCommandOperation(command)
   }
 
-  const value = firstDefinedInput(record, ['operation', 'action', 'subcommand', 'kind'])
+  return operationFromValue(
+    firstDefinedInput(record, ['operation', 'action', 'subcommand', 'kind']),
+    tool
+  )
+}
+
+function operationFromValue(value: unknown, tool: string): string {
   if (typeof value === 'string' && value.trim().length > 0) {
     return value.normalize('NFKC').trim().toLowerCase().replaceAll(/\s+/gv, ' ')
   }
@@ -52,14 +58,11 @@ export function operationDescriptor(record: ToolRecord): OperationDescriptor {
 }
 
 function inputSource(record: ToolRecord): unknown {
-  const inputRecord = isRecord(record) ? record : {}
-  return (
-    inputRecord.input ??
-    inputRecord.command ??
-    inputRecord.cmd ??
-    inputRecord.params ??
-    inputRecord.arguments
-  )
+  if (!isRecord(record)) {
+    return undefined
+  }
+
+  return firstDefinedInput(record, ['input', 'command', 'cmd', 'params', 'arguments'])
 }
 
 function executionCommand(record: ToolRecord): string {
@@ -101,6 +104,10 @@ function normalizeShellValue(value: unknown, depth: number): unknown {
     return value
   }
 
+  return normalizeNonNullShellValue(value, depth)
+}
+
+function normalizeNonNullShellValue(value: unknown, depth: number): unknown {
   if (typeof value === 'string') {
     return normalizeForComparison(value)
   }
@@ -117,6 +124,10 @@ function normalizeShellValue(value: unknown, depth: number): unknown {
 }
 
 function normalizeShellInput(value: unknown, depth = 0, isCommandValue = false): unknown {
+  return normalizeShellInputAt(value, depth, isCommandValue)
+}
+
+function normalizeShellInputAt(value: unknown, depth: number, isCommandValue: boolean): unknown {
   if (depth > 8) {
     return '[DepthLimit]'
   }

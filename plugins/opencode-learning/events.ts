@@ -27,6 +27,12 @@ export class EventBus {
     this.ctx = ctx
   }
 
+  async #closeIterator(): Promise<void> {
+    try {
+      await this.iterator?.return?.()
+    } catch {}
+  }
+
   async #run(): Promise<void> {
     const { controller } = this
     if (controller === undefined) {
@@ -76,10 +82,7 @@ export class EventBus {
   async dispose(): Promise<void> {
     this.disposed = true
     this.controller?.abort()
-    try {
-      await this.iterator?.return?.()
-    } catch {}
-
+    await this.#closeIterator()
     await this.task
   }
 }

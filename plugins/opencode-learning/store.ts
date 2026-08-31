@@ -38,6 +38,31 @@ export { proposalInputSchema, validationInputSchema } from './store-schemas.ts'
 export type { OwnedSkill } from './store-types.ts'
 type PreparedPatch = { current: OwnedSkill; nextText: string; supportingFiles: SupportingFile[] }
 
+async function readOwnedSkill(
+  file: string,
+  skillId: string,
+  scope: string,
+  supportingFiles: (
+    skillId: string,
+    scope: string
+  ) => Promise<Array<{ path: string; bytes: number }>>
+): Promise<OwnedSkill | undefined> {
+  const text = await fs.readFile(file, 'utf8')
+  if (!text.includes(OWNER_MARKER)) {
+    return undefined
+  }
+
+  return {
+    skillId,
+    scope,
+    file,
+    dir: path.dirname(file),
+    text,
+    sha256: sha256(text),
+    supportingFiles: await supportingFiles(skillId, scope)
+  }
+}
+
 async function preparePatch(
   store: SkillStore,
   proposal: Proposal,
@@ -109,20 +134,9 @@ export class SkillStore {
     const file = this.skillPath(skillId, scope)
     await assertNoSymlinkPath(file)
     try {
-      const text = await fs.readFile(file, 'utf8')
-      if (!text.includes(OWNER_MARKER)) {
-        return undefined
-      }
-
-      return {
-        skillId,
-        scope,
-        file,
-        dir: path.dirname(file),
-        text,
-        sha256: sha256(text),
-        supportingFiles: await this.listSupportingFiles(skillId, scope)
-      }
+      return await readOwnedSkill(file, skillId, scope, async (id, currentScope) =>
+        this.listSupportingFiles(id, currentScope)
+      )
     } catch (error: unknown) {
       if (hasErrorCode(error, 'ENOENT')) {
         return undefined

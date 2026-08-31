@@ -5,7 +5,16 @@ import { canonicalDirectory, createRuntime, terminalDirectory } from './setup-ru
 import { registerAgents } from './setup-agents.ts'
 import { registerCommands } from './setup-commands.ts'
 import { isLearningTool, registerTools } from './setup-tools.ts'
-import { isRecord, SESSION_ID_KEY } from './shared.ts'
+import { SESSION_ID_KEY } from './shared.ts'
+import {
+  enqueueEvent,
+  isRootSession,
+  isSessionEventUnavailable,
+  isSessionInfoStale,
+  isUnavailableForegroundSession,
+  runtimeSkillId,
+  sessionInfoGeneration
+} from './setup-session.ts'
 import type { OpenCodeContext, SessionInfo, SessionMovedEvent, TerminalEvent } from './sdk.ts'
 import type { LearningConfig } from './types.ts'
 import type { Runtime } from './setup-types.ts'
@@ -116,39 +125,23 @@ export class LearningSetup {
   }
 
   recordRuntimeSkillUse(runtime: Runtime, event: { tool: string; input: unknown }): void {
-    if (event.tool !== 'skill' || !isRecord(event.input)) {
+    const skillId = runtimeSkillId(event)
+    if (skillId === undefined) {
       return
     }
 
-    const skillId = event.input.name ?? event.input.id ?? event.input.skill
-    if (typeof skillId === 'string') {
-      void runtime.telemetry.recordUse(skillId).catch(console.error)
-    }
+    void runtime.telemetry.recordUse(skillId).catch(console.error)
   }
 
   async enqueueSessionEvent(
     sessionID: string | undefined,
     task: () => Promise<void> | void
   ): Promise<void> {
-    if (sessionID === undefined || sessionID.length === 0 || this.isSessionEventsStopped) {
+    if (isSessionEventUnavailable(sessionID, this.isSessionEventsStopped)) {
       return
     }
 
-    const previous = this.sessionEventChains.get(sessionID) ?? Promise.resolve()
-    const next = previous
-      .catch((error: unknown) => {
-        console.error('[opencode-learning] session event failed', error)
-      })
-      .then(task)
-    this.sessionEventChains.set(sessionID, next)
-    const clear = () => {
-      if (this.sessionEventChains.get(sessionID) === next) {
-        this.sessionEventChains.delete(sessionID)
-      }
-    }
-
-    void next.then(clear).catch(clear)
-    return next
+    return enqueueEvent(this.sessionEventChains, sessionID, task)
   }
 
   async sessionInfoFor(sessionID: string): Promise<SessionInfo> {
@@ -157,9 +150,9 @@ export class LearningSetup {
       return cached
     }
 
-    const generation = this.sessionInfoGenerations.get(sessionID) ?? 0
+    const generation = sessionInfoGeneration(this.sessionInfoGenerations, sessionID)
     const session = await this.ctx.session.get({ [SESSION_ID_KEY]: sessionID })
-    if (generation !== (this.sessionInfoGenerations.get(sessionID) ?? 0)) {
+    if (isSessionInfoStale(this.sessionInfoGenerations, sessionID, generation)) {
       return this.sessionInfoFor(sessionID)
     }
 
@@ -168,16 +161,12 @@ export class LearningSetup {
   }
 
   async foregroundSessionFor(sessionID: string | undefined): Promise<SessionInfo | undefined> {
-    if (
-      sessionID === undefined ||
-      sessionID.length === 0 ||
-      this.mailbox.isInternalSession(sessionID)
-    ) {
+    if (isUnavailableForegroundSession(sessionID, this.mailbox)) {
       return undefined
     }
 
     const session = await this.sessionInfoFor(sessionID)
-    return session.parentID === undefined || session.parentID.length === 0 ? session : undefined
+    return isRootSession(session) ? session : undefined
   }
 
   async runtimeForSession(sessionID: string, session?: SessionInfo): Promise<Runtime> {

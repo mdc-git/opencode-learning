@@ -25,6 +25,10 @@ export function validateProposal(
   proposal: unknown,
   { confidenceThreshold = 0.72 }: { confidenceThreshold?: number } = {}
 ): Validation {
+  return validateProposalAt(proposal, confidenceThreshold)
+}
+
+function validateProposalAt(proposal: unknown, confidenceThreshold: number): Validation {
   const errors: string[] = []
   const warnings: string[] = []
   if (!isRecord(proposal)) {
@@ -180,16 +184,21 @@ function validatePatchProposal(candidate: Proposal, errors: string[]): void {
 }
 
 function validatePatchRequirements(candidate: Proposal, errors: string[]): void {
-  if (
-    typeof candidate.expectedSha256 !== 'string' ||
-    !/^[0-9a-f]{64}$/iv.test(candidate.expectedSha256)
-  ) {
+  if (isInvalidExpectedHash(candidate.expectedSha256)) {
     errors.push('patch requires expectedSha256')
   }
 
-  if (!Array.isArray(candidate.operations) || candidate.operations.length === 0) {
+  if (isMissingPatchOperations(candidate.operations)) {
     errors.push('patch requires operations')
   }
+}
+
+function isInvalidExpectedHash(value: unknown): boolean {
+  return typeof value !== 'string' || !/^[0-9a-f]{64}$/iv.test(value)
+}
+
+function isMissingPatchOperations(value: unknown): boolean {
+  return !Array.isArray(value) || value.length === 0
 }
 
 function validatePatchOperations(candidate: Proposal, errors: string[]): void {
@@ -199,21 +208,33 @@ function validatePatchOperations(candidate: Proposal, errors: string[]): void {
 }
 
 function validateSectionOperation(op: SectionOperation, errors: string[]): void {
-  if (!['replace_section', 'append_section'].includes(op.kind)) {
+  if (isInvalidOperationKind(op.kind)) {
     errors.push(`unsupported operation ${op.kind}`)
   }
 
-  if (typeof op.heading !== 'string' || op.heading.trim().length === 0) {
+  if (isMissingOperationHeading(op.heading)) {
     errors.push('operation heading is required')
   }
 
-  if (typeof op.body !== 'string' || op.body.trim().length === 0) {
+  if (isMissingOperationBody(op.body)) {
     errors.push('operation body is required')
   }
 }
 
+function isInvalidOperationKind(value: unknown): boolean {
+  return !['replace_section', 'append_section'].includes(String(value))
+}
+
+function isMissingOperationHeading(value: unknown): boolean {
+  return typeof value !== 'string' || value.trim().length === 0
+}
+
+function isMissingOperationBody(value: unknown): boolean {
+  return typeof value !== 'string' || value.trim().length === 0
+}
+
 function validateSupportingFiles(files: unknown, errors: string[], label: string): void {
-  if (files === null || files === undefined) {
+  if (isMissingSupportingFiles(files)) {
     return
   }
 
@@ -227,6 +248,10 @@ function validateSupportingFiles(files: unknown, errors: string[], label: string
   }
 }
 
+function isMissingSupportingFiles(files: unknown): boolean {
+  return files === null || files === undefined
+}
+
 function validateSupportingFile(file: unknown, errors: string[], label: string): void {
   if (!isRecord(file)) {
     errors.push(`${label} entries must be objects`)
@@ -237,9 +262,13 @@ function validateSupportingFile(file: unknown, errors: string[], label: string):
     errors.push(`${label} path must be a safe relative path outside SKILL.md`)
   }
 
-  if (typeof file.content !== 'string' || file.content.trim().length === 0) {
+  if (isMissingSupportingContent(file.content)) {
     errors.push(`${label} content is required`)
   }
+}
+
+function isMissingSupportingContent(value: unknown): boolean {
+  return typeof value !== 'string' || value.trim().length === 0
 }
 
 export function isSafeSupportPath(value: unknown): boolean {

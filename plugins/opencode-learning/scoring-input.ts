@@ -6,6 +6,10 @@ function isRecord(value: unknown): value is UnknownRecord {
 }
 
 export function parseInput(value: unknown, depth = 0): unknown {
+  return parseInputAtDepth(value, depth)
+}
+
+function parseInputAtDepth(value: unknown, depth: number): unknown {
   if (typeof value !== 'string' || depth > 4) {
     return value
   }
@@ -21,7 +25,7 @@ export function parseInput(value: unknown, depth = 0): unknown {
 function parseJsonInput(original: string, text: string, depth: number): unknown {
   try {
     const parsed = JSON.parse(text) as unknown
-    return parsed === original ? original : parseInput(parsed, depth + 1)
+    return parsed === original ? original : parseInputAtDepth(parsed, depth + 1)
   } catch {
     return original
   }
@@ -69,10 +73,18 @@ function isInvalidCommandValue(value: unknown, depth: number): boolean {
 }
 
 export function commandText(value: unknown, depth = 0): string {
+  return commandTextAtDepth(value, depth)
+}
+
+function commandTextAtDepth(value: unknown, depth: number): string {
   if (isInvalidCommandValue(value, depth)) {
     return ''
   }
 
+  return commandTextNonInvalid(value, depth)
+}
+
+function commandTextNonInvalid(value: unknown, depth: number): string {
   if (typeof value === 'string') {
     return value
   }
@@ -90,14 +102,14 @@ export function commandText(value: unknown, depth = 0): string {
 
 function commandTextArray(value: unknown[], depth: number): string {
   return value
-    .map((item) => commandText(item, depth + 1))
+    .map((item) => commandTextAtDepth(item, depth + 1))
     .filter(Boolean)
     .join(' ')
 }
 
 function commandTextRecord(value: UnknownRecord, depth: number): string {
   for (const key of ['command', 'cmd', 'script', 'shell']) {
-    const text = commandText(value[key], depth + 1)
+    const text = commandTextAtDepth(value[key], depth + 1)
     if (text.length > 0) {
       return text
     }
@@ -120,12 +132,8 @@ export function extractCommand(record: ToolRecord): string {
 }
 
 export function normalizeTool(record: ToolRecord): string {
-  if (!isRecord(record)) {
-    return ''
-  }
-
-  const value = record.tool ?? record.name
-  if (typeof value !== 'string') {
+  const value = toolNameValue(record)
+  if (value === undefined) {
     return ''
   }
 
@@ -134,4 +142,13 @@ export function normalizeTool(record: ToolRecord): string {
     .toLowerCase()
     .split(/[.\/\\]/v)
   return parts.at(-1) ?? ''
+}
+
+function toolNameValue(record: ToolRecord): string | undefined {
+  if (!isRecord(record)) {
+    return undefined
+  }
+
+  const value = record.tool ?? record.name
+  return typeof value === 'string' ? value : undefined
 }

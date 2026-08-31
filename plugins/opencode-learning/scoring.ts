@@ -84,14 +84,26 @@ export function scoreReviewCandidate(
 
   const normalized = normalizedThreshold(threshold)
   return {
-    eligible: points.score >= normalized && strongSignals.length > 0,
+    eligible: isEligibleScore(points.score, normalized, strongSignals),
     score: points.score,
     threshold: normalized,
     strongSignals,
-    workflowOnly: points.workflow > 0 && points.correction === 0 && points.recovery === 0,
+    workflowOnly: isWorkflowOnly(points),
     fingerprint: candidateFingerprint(features),
     reasons: counts
   }
+}
+
+function isEligibleScore(score: number, threshold: number, signals: string[]): boolean {
+  return score >= threshold && signals.length > 0
+}
+
+function isWorkflowOnly(points: {
+  workflow: number
+  correction: number
+  recovery: number
+}): boolean {
+  return points.workflow > 0 && points.correction === 0 && points.recovery === 0
 }
 
 type ScoreCountKey = keyof TriggerDecision['reasons']

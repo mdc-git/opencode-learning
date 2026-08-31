@@ -40,11 +40,16 @@ function isCompletedTurnSucceeded(turn: TurnRecord): boolean {
 }
 
 function turnSource(experience: Experience): TurnRecord[] {
-  if (Array.isArray(experience?.turns) && experience.turns.length > 0) {
-    return experience.turns
+  const { turns, completedTurns } = experience
+  if (hasTurnSource(turns)) {
+    return turns
   }
 
-  return Array.isArray(experience?.completedTurns) ? experience.completedTurns : []
+  return Array.isArray(completedTurns) ? completedTurns : []
+}
+
+function hasTurnSource(value: TurnRecord[] | undefined): value is TurnRecord[] {
+  return Array.isArray(value) && value.length > 0
 }
 
 function addTurnState(states: Map<string, boolean>, item: TurnRecord): void {

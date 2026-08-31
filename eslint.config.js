@@ -37,7 +37,7 @@ export default defineConfig([
       boundaries
     },
     rules: {
-      complexity: ['error', 6],
+      complexity: ['error', 4],
       'max-depth': ['error', 3],
       'max-params': ['error', 4],
       'max-lines-per-function': ['error', 50],
