@@ -1,7 +1,7 @@
 type UnknownRecord = Record<string, unknown>
 type ToolRecord = UnknownRecord
 
-function isRecord(value: unknown): value is UnknownRecord {
+export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 

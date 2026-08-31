@@ -2,7 +2,8 @@ import path from 'node:path'
 import { daysSince, readJson, writeJson } from './shared.ts'
 import type { CuratorConfig, LearningConfig } from './types.ts'
 import type { OwnedSkill, SkillStore } from './store.ts'
-import type { SkillTelemetry, Telemetry } from './telemetry.ts'
+import type { SkillTelemetry } from './telemetry-state.ts'
+import type { Telemetry } from './telemetry.ts'
 import type { CuratorResult } from './review-types.ts'
 
 export class Curator {

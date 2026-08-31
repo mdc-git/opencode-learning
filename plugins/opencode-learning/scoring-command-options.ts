@@ -14,7 +14,6 @@ import {
 
 export { firstCommandWord, positionalCommandWords } from './scoring-command-positionals.ts'
 
-const SKIPPED_COMMANDS = new Set(['cd', 'export', 'set', 'source'])
 const ENV_OPTION_VALUES = new Set(['-C', '-S', '--chdir', '--split-string', '--unset', '-u'])
 const ENV_OPTION_FLAGS = new Set(['--ignore-environment', '--null', '-0', '-i'])
 const ENV_OPTION_PREFIXES = ['-C', '-S', '-u']

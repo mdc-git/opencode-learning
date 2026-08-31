@@ -1,9 +1,6 @@
 import type { Experience, TurnRecord } from './scoring-types.ts'
 import { turnKey, turnValue } from './scoring-corrections.ts'
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
+import { isRecord } from './scoring-input.ts'
 
 function firstTurnStatus(turn: Record<string, unknown>): unknown {
   if (turn.succeeded !== undefined) {

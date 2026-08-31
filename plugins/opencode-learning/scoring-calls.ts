@@ -9,16 +9,13 @@ import {
   parseInput,
   shellTokens
 } from './scoring-commands.ts'
+import { isRecord } from './scoring-input.ts'
 import { normalizeForComparison, normalizedTarget, stableHash } from './scoring-hash.ts'
 import type { OperationDescriptor, ToolKind, ToolRecord, UnknownRecord } from './scoring-types.ts'
 
 const INSPECTION_TOOLS = new Set(['read', 'grep', 'glob', 'webfetch', 'websearch', 'skill'])
 const MUTATION_TOOLS = new Set(['patch', 'edit', 'write'])
 const DELEGATE_TOOLS = new Set(['task', 'delegate', 'subagent', 'agent', 'spawn'])
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function firstDefinedInput(record: ToolRecord, names: string[]): unknown {
   for (const name of names) {

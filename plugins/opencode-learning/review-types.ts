@@ -20,6 +20,19 @@ export type ReviewOptions = {
   terminalType?: string
   triggerDecision?: TriggerDecision
 }
+
+export function normalizeReviewOptions(options: ReviewOptions): {
+  force: boolean
+  terminalType: string
+  triggerDecision: TriggerDecision | undefined
+} {
+  return {
+    force: options.force ?? false,
+    terminalType: options.terminalType ?? 'session.execution.succeeded',
+    triggerDecision: options.triggerDecision
+  }
+}
+
 export type ReviewAttemptOptions = ReviewOptions & { onReflectorStart?: () => void }
 export type ReviewValidation = UnknownRecord & {
   deterministic: Validation
@@ -53,16 +66,6 @@ export type ReviewScore =
       signals: TriggerDecision['strongSignals']
     }
   | undefined
-export type ReviewFailureOptions = {
-  telemetry: Telemetry
-  ctx: OpenCodeContext
-  sessionID: string
-  terminalType: string
-  force: boolean
-  score: ReviewScore
-  error: unknown
-  notify: boolean
-}
 export type ReviewErrorOptions = {
   sessionId: string
   terminalType: string

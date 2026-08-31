@@ -8,6 +8,10 @@ type SupportingFileStore = {
   addSupportingFiles: (skillDir: string, files: SupportingFile[]) => Promise<void>
 }
 
+export function proposalFiles(proposal: Proposal): SupportingFile[] {
+  return proposal.skill?.files ?? []
+}
+
 export async function writeCreatedSkill({
   store,
   dir,
@@ -28,14 +32,6 @@ export async function writeCreatedSkill({
     await fs.rm(dir, { recursive: true, force: true })
     throw error
   }
-}
-
-export function supportingFilePaths(files: SupportingFile[] | undefined): string[] {
-  return files?.map((file) => file.path) ?? []
-}
-
-export function proposalFiles(proposal: Proposal): SupportingFile[] {
-  return proposal.skill?.files ?? []
 }
 
 export function applyOperations(markdown: string, operations: SectionOperation[]): string {

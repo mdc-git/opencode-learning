@@ -1,4 +1,5 @@
 import { isSha256, safeSignalHash, stableHash } from './scoring-hash.ts'
+import { isRecord } from './scoring-input.ts'
 import type {
   CorrectionDetails,
   CorrectionSignal,
@@ -6,10 +7,6 @@ import type {
   ToolRecord,
   UnknownRecord
 } from './scoring-types.ts'
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function stripQuotedContent(value: unknown): string {
   let text = typeof value === 'string' ? value : ''

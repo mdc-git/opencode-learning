@@ -52,7 +52,11 @@ export function observeToolCall(
   event: ToolAfterEvent,
   record: ToolCall
 ): void {
-  recordSkillUse(exp, event)
+  const skillId = skillIdForEvent(event)
+  if (skillId !== undefined) {
+    exp.skillsUsed.add(skillId)
+  }
+
   if (isRecovery(exp, record)) {
     exp.recoveries += 1
   }
@@ -62,31 +66,12 @@ export function observeToolCall(
   }
 }
 
-function recordSkillUse(exp: ExperienceState, event: ToolAfterEvent): void {
-  const skillId = skillIdForEvent(event)
-  if (skillId === undefined) {
-    return
-  }
-
-  exp.skillsUsed.add(skillId)
-}
-
-function skillIdForEvent(event: ToolAfterEvent): string | undefined {
-  if (!isSkillEvent(event)) {
+export function skillIdForEvent(event: { tool?: string; input: unknown }): string | undefined {
+  if (event.tool !== 'skill' || !isRecord(event.input)) {
     return undefined
   }
 
-  return skillIdValue(event.input)
-}
-
-function isSkillEvent(
-  event: ToolAfterEvent
-): event is ToolAfterEvent & { input: Record<string, unknown> } {
-  return event.tool === 'skill' && isRecord(event.input)
-}
-
-function skillIdValue(input: Record<string, unknown>): string | undefined {
-  return [input.name, input.id, input.skill].find(
+  return [event.input.name, event.input.id, event.input.skill].find(
     (value): value is string => typeof value === 'string'
   )
 }
@@ -145,10 +130,6 @@ export function consumePendingTool(
 
 export function pendingToolInput(lookup: PendingToolLookup, event: ToolAfterEvent): string {
   return lookup.pending?.input ?? trimText(extractText(event.input), 2500)
-}
-
-export function isPendingToolTombstone(tombstones: Set<string> | undefined, key: string): boolean {
-  return tombstones?.has(key) ?? false
 }
 
 export function pendingKeysForSession(

@@ -148,29 +148,21 @@ async function consumeEventItem(
     }
 
     options.onEvent(iteration.value)
-    return continueConsumingEvents(iterator, options)
+    return consumeEventItem(iterator, options)
   })
-}
-
-async function continueConsumingEvents(
-  iterator: AsyncIterator<OpenCodeEvent>,
-  options: EventLoopOptions
-): Promise<void> {
-  return consumeEventItem(iterator, options)
 }
 
 function emitTerminalEvent(
   event: OpenCodeEvent,
   listeners: Set<(event: TerminalEvent) => void>
 ): void {
-  const terminalEvent = terminalEventFrom(event)
-  if (terminalEvent === undefined) {
+  if (!isTerminalEvent(event)) {
     return
   }
 
   for (const listener of listeners) {
     try {
-      listener(terminalEvent)
+      listener(event)
     } catch (error) {
       console.error('[opencode-learning] terminal event listener failed', error)
     }
@@ -192,14 +184,6 @@ function emitSessionMovedEvent(
       console.error('[opencode-learning] session-move listener failed', error)
     }
   }
-}
-
-function terminalEventFrom(event: OpenCodeEvent): TerminalEvent | undefined {
-  if (isTerminalEvent(event)) {
-    return event
-  }
-
-  return undefined
 }
 
 function isTerminalEvent(event: OpenCodeEvent): event is TerminalEvent {

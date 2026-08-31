@@ -18,10 +18,6 @@ function hasExperienceFailures(exp: ExperienceSnapshot): boolean {
   return exp.toolCalls?.some((x) => x.status === 'error') ?? false
 }
 
-function experienceSkills(exp: ExperienceSnapshot): string[] {
-  return exp.skillsUsed ?? []
-}
-
 function triggerStatsFor(state: TelemetryState): TriggerStats {
   state.triggerStats ??= defaultTriggerStats()
   return state.triggerStats
@@ -41,9 +37,6 @@ const TRIGGER_OUTCOME_UPDATES: Record<string, (stats: TriggerStats) => void> = {
     stats.errors += 1
   }
 }
-
-export { normalizeTelemetryState } from './telemetry-state.ts'
-export type { SkillTelemetry } from './telemetry-state.ts'
 
 function recordSkillExperience(
   skill: SkillTelemetry,
@@ -167,7 +160,7 @@ export class Telemetry {
 
   async recordExperience(exp: ExperienceSnapshot): Promise<void> {
     const isFailures = hasExperienceFailures(exp)
-    for (const id of experienceSkills(exp)) {
+    for (const id of exp.skillsUsed ?? []) {
       const s = this.skill(id)
       recordSkillExperience(s, exp, isFailures)
     }

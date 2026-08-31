@@ -54,7 +54,10 @@ export async function runReflector({
     title: 'Procedural skill reflection'
   })
   const { id } = session
-  assertReviewSessionId(id, 'reflector')
+  if (id.length === 0) {
+    throw new Error('OpenCode did not return a reflector session id')
+  }
+
   onReflectorStart?.()
   return runReviewSession({
     ctx,
@@ -85,7 +88,10 @@ export async function runValidator({
     title: 'Procedural skill validation'
   })
   const { id } = session
-  assertReviewSessionId(id, 'validator')
+  if (id.length === 0) {
+    throw new Error('OpenCode did not return a validator session id')
+  }
+
   return runReviewSession({
     ctx,
     mailbox,
@@ -100,12 +106,6 @@ export async function runValidator({
     }),
     missingSubmission: 'validator finished without submitting a validation'
   })
-}
-
-function assertReviewSessionId(id: string, role: string): void {
-  if (id.length === 0) {
-    throw new Error(`OpenCode did not return a ${role} session id`)
-  }
 }
 
 async function runReviewSession<T>({

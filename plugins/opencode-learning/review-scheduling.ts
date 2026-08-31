@@ -12,12 +12,13 @@ import type { OpenCodeContext } from './sdk.ts'
 import type { Telemetry } from './telemetry.ts'
 import type { ExperienceSnapshot, LearningConfig } from './types.ts'
 import type { TriggerDecision } from './scoring.ts'
-import type {
-  PreparedReview,
-  ReviewOptions,
-  ReviewOutcome,
-  ReviewPipelineOptions,
-  ReviewRequest
+import {
+  normalizeReviewOptions,
+  type PreparedReview,
+  type ReviewOptions,
+  type ReviewOutcome,
+  type ReviewPipelineOptions,
+  type ReviewRequest
 } from './review-types.ts'
 
 export abstract class ReviewScheduling {
@@ -104,7 +105,7 @@ export abstract class ReviewScheduling {
   }
 
   isSchedulable(sessionID: string): boolean {
-    return sessionID.length > 0 && !this.disposed && !this.mailbox.isInternalSession(sessionID)
+    return !isReviewSessionUnavailable(sessionID, this.disposed, this.mailbox)
   }
 
   executionFinished(sessionID: string, options?: { terminalType?: string }): void {
@@ -150,7 +151,7 @@ export abstract class ReviewScheduling {
   }
 
   start(sessionID: string, options: ReviewOptions = {}): void {
-    const { force, terminalType } = normalizedReviewOptions(options)
+    const { force, terminalType } = normalizeReviewOptions(options)
     if (
       !canStartReview({
         [SESSION_ID_KEY]: sessionID,
@@ -184,12 +185,8 @@ export abstract class ReviewScheduling {
       })
     this.activeReviews.add(review)
     void review
-      .then(() => {
-        this.activeReviews.delete(review)
-      })
-      .catch(() => {
-        this.activeReviews.delete(review)
-      })
+      .then(() => this.activeReviews.delete(review))
+      .catch(() => this.activeReviews.delete(review))
   }
 
   markAutomaticReview(sessionID: string, isForced: boolean): void {
@@ -226,16 +223,4 @@ function scheduleRequest(
 
 function executionTerminalType(options: { terminalType?: string } | undefined): string {
   return options?.terminalType ?? 'session.execution.succeeded'
-}
-
-function normalizedReviewOptions(options: ReviewOptions): {
-  force: boolean
-  terminalType: string
-  triggerDecision: TriggerDecision | undefined
-} {
-  return {
-    force: options.force ?? false,
-    terminalType: options.terminalType ?? 'session.execution.succeeded',
-    triggerDecision: options.triggerDecision
-  }
 }

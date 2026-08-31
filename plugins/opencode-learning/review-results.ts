@@ -12,15 +12,12 @@ import type {
 import type { TriggerDecision } from './scoring.ts'
 import type { Telemetry } from './telemetry.ts'
 import type {
-  ReviewAttempt,
-  ReviewFailureOptions,
   ReviewOutcome,
   ReviewResultOptions,
   ReviewScore,
   ReviewValidation
 } from './review-types.ts'
 import { recordReviewResult, summarizeNoChange } from './review-result-details.ts'
-import { recordReviewFailure as recordReviewFailureDetails } from './review-failure.ts'
 
 export async function maybeValidateProposal({
   enabled,
@@ -84,21 +81,6 @@ export function reviewScore(triggerDecision: TriggerDecision | undefined): Revie
   }
 }
 
-export async function retryReviewAttempt(
-  run: () => Promise<ReviewAttempt>,
-  shouldStop: () => boolean
-): Promise<ReviewAttempt> {
-  try {
-    return await run()
-  } catch (error) {
-    if (shouldStop()) {
-      throw error
-    }
-
-    return run()
-  }
-}
-
 export function createAutomaticReviewStart(telemetry: Telemetry, isForced: boolean): () => void {
   let hasStarted = false
   return () => {
@@ -111,10 +93,6 @@ export function createAutomaticReviewStart(telemetry: Telemetry, isForced: boole
       console.error('[opencode-learning] automatic-review telemetry failed', error)
     })
   }
-}
-
-export async function recordReviewFailure(options: ReviewFailureOptions): Promise<void> {
-  return recordReviewFailureDetails(options)
 }
 
 export async function finishReview(options: ReviewResultOptions): Promise<ReviewOutcome> {
@@ -203,7 +181,13 @@ async function finishApplied({
   recordFingerprint
 }: ReviewResultOptions): Promise<ReviewOutcome> {
   const applied = await applyProposal(store, proposal)
-  await recordAppliedSkill(telemetry, proposal)
+  const skillId = proposal.skillId ?? ''
+  if (proposal.decision === 'create') {
+    await telemetry.recordCreated(skillId)
+  } else {
+    await telemetry.recordPatched(skillId)
+  }
+
   await ctx.skill.reload()
   await notifyAppliedReview({
     ctx,
@@ -213,7 +197,9 @@ async function finishApplied({
     proposal
   })
   recordFingerprint(sessionID, triggerDecision, 'accepted')
-  await recordAcceptedReviewOutcome(telemetry, force)
+  if (!force) {
+    await telemetry.recordTriggerOutcome('applied').catch(console.error)
+  }
 
   return { status: 'applied', applied, proposal, validation, score }
 }
@@ -224,16 +210,6 @@ async function applyProposal(store: SkillStore, proposal: Proposal): Promise<unk
   }
 
   return store.patch(proposal, { scope: proposal.scope })
-}
-
-async function recordAppliedSkill(telemetry: Telemetry, proposal: Proposal): Promise<void> {
-  const skillId = proposal.skillId ?? ''
-  if (proposal.decision === 'create') {
-    await telemetry.recordCreated(skillId)
-    return
-  }
-
-  await telemetry.recordPatched(skillId)
 }
 
 async function notifyAppliedReview({
@@ -255,11 +231,5 @@ async function notifyAppliedReview({
       sessionID,
       `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`
     )
-  }
-}
-
-async function recordAcceptedReviewOutcome(telemetry: Telemetry, isForced: boolean): Promise<void> {
-  if (!isForced) {
-    await telemetry.recordTriggerOutcome('applied').catch(console.error)
   }
 }

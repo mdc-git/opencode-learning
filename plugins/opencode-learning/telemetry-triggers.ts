@@ -54,21 +54,13 @@ export function recordTriggerSignals(
 }
 
 function triggerSignalKey(value: string): keyof TriggerStats['signals'] | undefined {
-  switch (value) {
-    case 'correction': {
-      return value
-    }
-
-    case 'recovery': {
-      return value
-    }
-
-    case 'workflow': {
-      return value
-    }
-
-    default: {
-      return undefined
-    }
-  }
+  return TRIGGER_SIGNAL_KEYS.has(value as keyof TriggerStats['signals'])
+    ? (value as keyof TriggerStats['signals'])
+    : undefined
 }
+
+const TRIGGER_SIGNAL_KEYS = new Set<keyof TriggerStats['signals']>([
+  'correction',
+  'recovery',
+  'workflow'
+])

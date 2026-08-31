@@ -3,7 +3,7 @@ import { loadConfig } from './config.ts'
 import type { OpenCodeContext } from './sdk.ts'
 import { LearningSetup } from './setup.ts'
 
-export { normalizeTelemetryState } from './telemetry.ts'
+export { normalizeTelemetryState } from './telemetry-state.ts'
 
 export default Plugin.define({
   id: 'github.learning_skills',

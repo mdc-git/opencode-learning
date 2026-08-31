@@ -15,7 +15,6 @@ import {
   proposalFiles,
   reserveDirectory,
   supportPath,
-  supportingFilePaths,
   writeCreatedSkill,
   yamlScalar
 } from './store-files.ts'
@@ -183,7 +182,7 @@ ${skill.body.trim()}
       file,
       text,
       sha256: sha256(text),
-      supportingFiles: supportingFilePaths(files)
+      supportingFiles: files.map((item) => item.path)
     }
   }
 
@@ -198,7 +197,7 @@ ${skill.body.trim()}
       file: prepared.current.file,
       text: prepared.nextText,
       sha256: sha256(prepared.nextText),
-      addedFiles: supportingFilePaths(prepared.supportingFiles)
+      addedFiles: prepared.supportingFiles.map((item) => item.path)
     }
   }
 

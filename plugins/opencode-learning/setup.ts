@@ -6,13 +6,13 @@ import { registerAgents } from './setup-agents.ts'
 import { registerCommands } from './setup-commands.ts'
 import { isLearningTool, registerTools } from './setup-tools.ts'
 import { SESSION_ID_KEY } from './shared.ts'
+import { skillIdForEvent } from './recorder-tools.ts'
 import {
   enqueueEvent,
   isRootSession,
   isSessionEventUnavailable,
   isSessionInfoStale,
   isUnavailableForegroundSession,
-  runtimeSkillId,
   sessionInfoGeneration
 } from './setup-session.ts'
 import type { OpenCodeContext, SessionInfo, SessionMovedEvent, TerminalEvent } from './sdk.ts'
@@ -125,7 +125,7 @@ export class LearningSetup {
   }
 
   recordRuntimeSkillUse(runtime: Runtime, event: { tool: string; input: unknown }): void {
-    const skillId = runtimeSkillId(event)
+    const skillId = skillIdForEvent(event)
     if (skillId === undefined) {
       return
     }

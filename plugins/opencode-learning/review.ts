@@ -3,13 +3,11 @@ import {
   createAutomaticReviewStart,
   finishReview,
   maybeValidateProposal,
-  recordReviewFailure,
   reviewScore,
-  reviewValidation,
-  retryReviewAttempt
+  reviewValidation
 } from './review-results.ts'
+import { recordReviewFailure } from './review-failure.ts'
 import { retrieveCandidates } from './review-candidates.ts'
-import { recordReviewFingerprint } from './review-fingerprints.ts'
 import {
   type ReflectorOptions,
   runReflector as runReflectorSession,
@@ -20,14 +18,15 @@ import { validateProposal } from './store.ts'
 import type { TriggerDecision } from './scoring.ts'
 import type { ExperienceSnapshot, Proposal, ValidationSubmission } from './types.ts'
 import type { OpenCodeContext, SessionInfo } from './sdk.ts'
-import type {
-  ReviewAttempt,
-  ReviewAttemptOptions,
-  ReviewErrorOptions,
-  ReviewOptions,
-  ReviewOutcome,
-  ReviewPreparation,
-  ReviewScore
+import {
+  normalizeReviewOptions,
+  type ReviewAttempt,
+  type ReviewAttemptOptions,
+  type ReviewErrorOptions,
+  type ReviewOptions,
+  type ReviewOutcome,
+  type ReviewPreparation,
+  type ReviewScore
 } from './review-types.ts'
 import { ReviewScheduling } from './review-scheduling.ts'
 
@@ -98,10 +97,15 @@ export class ReviewPipeline extends ReviewScheduling {
     exp: ExperienceSnapshot,
     options: ReviewAttemptOptions
   ): Promise<ReviewAttempt> {
-    return retryReviewAttempt(
-      async () => this.reviewAttempt(sessionID, exp, options),
-      () => this.disposed
-    )
+    try {
+      return await this.reviewAttempt(sessionID, exp, options)
+    } catch (error) {
+      if (this.disposed) {
+        throw error
+      }
+
+      return this.reviewAttempt(sessionID, exp, options)
+    }
   }
 
   async reviewWithRetry(
@@ -109,7 +113,7 @@ export class ReviewPipeline extends ReviewScheduling {
     exp: ExperienceSnapshot,
     options: ReviewOptions = {}
   ): Promise<ReviewOutcome> {
-    const { force, terminalType, triggerDecision } = reviewOptions(options)
+    const { force, terminalType, triggerDecision } = normalizeReviewOptions(options)
     if (this.isUnavailable(sessionID)) {
       return { status: 'skipped' }
     }
@@ -216,7 +220,17 @@ export class ReviewPipeline extends ReviewScheduling {
     triggerDecision: TriggerDecision | undefined,
     outcome: string
   ): void {
-    recordReviewFingerprint(this.reviewedFingerprints, sessionID, triggerDecision, outcome)
+    if (triggerDecision === undefined || triggerDecision.fingerprint.length === 0) {
+      return
+    }
+
+    let reviewed = this.reviewedFingerprints.get(sessionID)
+    if (reviewed === undefined) {
+      reviewed = new Map()
+      this.reviewedFingerprints.set(sessionID, reviewed)
+    }
+
+    reviewed.set(triggerDecision.fingerprint, outcome)
   }
 
   async runReflector(options: ReflectorOptions): Promise<Proposal> {
@@ -257,32 +271,12 @@ function reviewParent(
   parent: SessionInfo | undefined,
   projectRoot: string
 ): { directory: string; model: SessionInfo['model'] | undefined } {
-  return {
-    directory: reviewDirectory(parent, projectRoot),
-    model: reviewModel(parent)
-  }
-}
-
-function reviewDirectory(parent: SessionInfo | undefined, projectRoot: string): string {
   if (parent === undefined) {
-    return projectRoot
+    return { directory: projectRoot, model: undefined }
   }
 
-  return parent.location?.directory ?? projectRoot
-}
-
-function reviewModel(parent: SessionInfo | undefined): SessionInfo['model'] | undefined {
-  return parent?.model
-}
-
-function reviewOptions(options: ReviewOptions): {
-  force: boolean
-  terminalType: string
-  triggerDecision: TriggerDecision | undefined
-} {
   return {
-    force: options.force ?? false,
-    terminalType: options.terminalType ?? 'session.execution.succeeded',
-    triggerDecision: options.triggerDecision
+    directory: parent.location?.directory ?? projectRoot,
+    model: parent.model
   }
 }

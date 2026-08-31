@@ -11,6 +11,7 @@ import {
   turnKey,
   turnValue
 } from './scoring-corrections.ts'
+import { isRecord } from './scoring-input.ts'
 import { safeSignalHash, stableHash } from './scoring-hash.ts'
 import { addRecoverySignals, recoveryPairs } from './scoring-recovery.ts'
 import { isSuccessfulTurn, turnStates } from './scoring-turns.ts'
@@ -27,10 +28,6 @@ import type {
 
 const ACTION_KINDS = new Set(['mutate', 'execute'])
 const WORKFLOW_KINDS = new Set(['mutate', 'execute', 'verify'])
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function enrichedCalls(experience: Experience): EnrichedCall[] {
   const records = Array.isArray(experience?.toolCalls) ? experience.toolCalls : []

@@ -2,7 +2,18 @@ import { notifySession } from './events.ts'
 import { redactError, SESSION_ID_KEY } from './shared.ts'
 import type { OpenCodeContext } from './sdk.ts'
 import type { Telemetry } from './telemetry.ts'
-import type { ReviewFailureOptions, ReviewScore } from './review-types.ts'
+import type { ReviewScore } from './review-types.ts'
+
+type ReviewFailureOptions = {
+  telemetry: Telemetry
+  ctx: OpenCodeContext
+  sessionID: string
+  terminalType: string
+  force: boolean
+  score: ReviewScore
+  error: unknown
+  notify: boolean
+}
 
 type FailureTelemetryOptions = {
   telemetry: Telemetry
@@ -25,7 +36,10 @@ export async function recordReviewFailure(options: ReviewFailureOptions): Promis
     notify: shouldNotify
   } = options
   await recordFailureTelemetry({ telemetry, sessionId, terminalType, isForced, score, error })
-  await recordAutomaticFailure(telemetry, isForced)
+  if (!isForced) {
+    await telemetry.recordTriggerOutcome('error').catch(console.error)
+  }
+
   await notifyFailure({ ctx, sessionId, isForced, shouldNotify, error })
 }
 
@@ -47,12 +61,6 @@ async function recordFailureTelemetry({
       error: redactError(error)
     })
     .catch(() => undefined)
-}
-
-async function recordAutomaticFailure(telemetry: Telemetry, isForced: boolean): Promise<void> {
-  if (!isForced) {
-    await telemetry.recordTriggerOutcome('error').catch(console.error)
-  }
 }
 
 async function notifyFailure({

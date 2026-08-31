@@ -1,7 +1,6 @@
 type MailboxKind = 'proposal' | 'validation'
 type MailboxWaiter = {
   resolve: (value: unknown) => void
-  reject: (error: unknown) => void
   cancel: (error?: unknown) => void
 }
 
@@ -39,7 +38,6 @@ export class InternalMailbox {
   }
 
   sessionIds(): string[] {
-    // Array.from keeps this compatible with supported Node 20 releases.
     // eslint-disable-next-line unicorn/prefer-spread
     return Array.from(this.internal.keys())
   }
@@ -88,10 +86,6 @@ export class InternalMailbox {
         resolve(value) {
           clearTimeout(timer)
           resolve(value as T)
-        },
-        reject(error: unknown) {
-          clearTimeout(timer)
-          reject(error instanceof Error ? error : new Error('internal mailbox rejected'))
         },
         cancel(error = new Error('internal mailbox canceled')) {
           clearTimeout(timer)

@@ -10,7 +10,6 @@ import {
   consumePendingTool,
   createToolCall,
   isNewTerminalEvent,
-  isPendingToolTombstone,
   observeToolCall,
   pendingKeysForSession,
   pendingToolInput,
@@ -232,4 +231,8 @@ export class ExperienceRecorder {
       tombstones.add(key)
     }
   }
+}
+
+function isPendingToolTombstone(tombstones: Set<string> | undefined, key: string): boolean {
+  return tombstones?.has(key) ?? false
 }

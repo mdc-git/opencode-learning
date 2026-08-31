@@ -1,16 +1,5 @@
 import type { InternalMailbox } from './mailbox.ts'
-import { isRecord } from './shared.ts'
 import type { SessionInfo } from './sdk.ts'
-
-export function runtimeSkillId(event: { tool: string; input: unknown }): string | undefined {
-  if (event.tool !== 'skill' || !isRecord(event.input)) {
-    return undefined
-  }
-
-  return [event.input.name, event.input.id, event.input.skill].find(
-    (value): value is string => typeof value === 'string'
-  )
-}
 
 export function isSessionEventUnavailable(
   sessionID: string | undefined,
