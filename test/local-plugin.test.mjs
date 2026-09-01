@@ -104,12 +104,10 @@ async function waitForLocalPlugin(base, directory, diagnostics, deadline = Date.
     const statuses = []
     let plugins = []
     const poll = async () => {
-      const result = await pollLocalPlugin(base, directory)
-      if (result.plugins.length > 0) {
-        plugins = result.plugins
-      }
+      const result = await pollLocalPlugin(base, directory, diagnostics)
+      plugins = result.plugins
 
-      if (isActivePlugin(result.plugin)) {
+      if (isActivePlugin(result.plugin) && result.registrationsReady) {
         clearInterval(timer)
         clearTimeout(timeout)
         resolve(result.plugin)
@@ -133,7 +131,7 @@ async function waitForLocalPlugin(base, directory, diagnostics, deadline = Date.
   })
 }
 
-async function pollLocalPlugin(base, directory) {
+async function pollLocalPlugin(base, directory, diagnostics) {
   const abort = new AbortController()
   const timeout = setTimeout(() => abort.abort(), 5000)
   try {
@@ -146,12 +144,29 @@ async function pollLocalPlugin(base, directory) {
 
     const body = await response.json()
     const plugins = body.data
-    return { plugins, plugin: plugins.find(({ id }) => id === 'local.learning_skills') }
+    const plugin = plugins.find(({ id }) => id === 'local.learning_skills')
+    const locationQuery = `?location%5Bdirectory%5D=${encodeURIComponent(directory)}`
+    const [agents, commands] = await Promise.all([
+      api(base, `/api/agent${locationQuery}`, diagnostics),
+      api(base, `/api/command${locationQuery}`, diagnostics)
+    ])
+    return {
+      plugins,
+      plugin,
+      registrationsReady: hasLearningRegistrations(agents, commands)
+    }
   } catch (error) {
     return { plugins: [], status: error instanceof Error ? error.message : String(error) }
   } finally {
     clearTimeout(timeout)
   }
+}
+
+function hasLearningRegistrations(agents, commands) {
+  return (
+    learningAgents.every((id) => agents.data.some((agent) => agent.id === id)) &&
+    learningCommands.every((name) => commands.data.some((command) => command.name === name))
+  )
 }
 
 async function waitForClose(server, milliseconds) {
@@ -231,24 +246,6 @@ function startServer(project, root) {
   return { server, diagnostics }
 }
 
-async function assertLearningRegistrations(base, project, diagnostics) {
-  const locationQuery = `?location%5Bdirectory%5D=${encodeURIComponent(project)}`
-  const [agents, commands] = await Promise.all([
-    api(base, `/api/agent${locationQuery}`, diagnostics),
-    api(base, `/api/command${locationQuery}`, diagnostics)
-  ])
-  assert.deepEqual(
-    new Set(agents.data.map(({ id }) => id).filter((id) => learningAgents.includes(id))),
-    new Set(learningAgents)
-  )
-  assert.deepEqual(
-    new Set(
-      commands.data.map(({ name }) => name).filter((name) => learningCommands.includes(name))
-    ),
-    new Set(learningCommands)
-  )
-}
-
 test('loads the local learning plugin in a standalone session from a temp project', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   let server
@@ -285,8 +282,6 @@ test('loads the local learning plugin in a standalone session from a temp projec
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
     assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
-
-    await assertLearningRegistrations(base, project, started.diagnostics)
   } finally {
     try {
       if (server) {
