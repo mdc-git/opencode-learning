@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { assertNoSymlinkPath, hasErrorCode } from './shared.ts'
-import type { StoreOperations } from './store-operations.ts'
+import type { SkillStore } from './store.ts'
 
 async function copyPromotedSkill(
   sourceDir: string,
@@ -33,7 +33,12 @@ async function copyPromotedSkill(
   }
 }
 
-async function assertTargetPathAbsent(target: string, skillId: string): Promise<void> {
+async function ensurePromotionTarget(store: SkillStore, skillId: string): Promise<string> {
+  if (await store.getOwned(skillId, 'global')) {
+    throw new Error(`global skill already exists: ${skillId}`)
+  }
+
+  const target = store.skillDir(skillId, 'global')
   try {
     await fs.access(target)
     throw new Error(`global skill path already exists: ${skillId}`)
@@ -42,23 +47,12 @@ async function assertTargetPathAbsent(target: string, skillId: string): Promise<
       throw error
     }
   }
-}
 
-async function ensurePromotionTarget(
-  store: Pick<StoreOperations, 'getOwned' | 'skillDir'>,
-  skillId: string
-): Promise<string> {
-  if (await store.getOwned(skillId, 'global')) {
-    throw new Error(`global skill already exists: ${skillId}`)
-  }
-
-  const target = store.skillDir(skillId, 'global')
-  await assertTargetPathAbsent(target, skillId)
   return target
 }
 
 export async function promote(
-  store: Pick<StoreOperations, 'getOwned' | 'skillDir' | 'globalRootSkills'>,
+  store: SkillStore,
   skillId: string
 ): Promise<{ skillId: string; source: string; target: string }> {
   const source = await store.getOwned(skillId, 'project')
@@ -72,9 +66,9 @@ export async function promote(
 }
 
 export async function archiveSkill(
-  store: Pick<StoreOperations, 'getOwned' | 'archiveRoot'>,
+  store: SkillStore,
   skillId: string,
-  scope = 'project'
+  scope: string
 ): Promise<string | undefined> {
   const current = await store.getOwned(skillId, scope)
   if (!current) {

@@ -33,10 +33,6 @@ export class InternalMailbox {
     return this.known.has(sessionID)
   }
 
-  kind(sessionID: string): MailboxKind | undefined {
-    return this.internal.get(sessionID)
-  }
-
   sessionIds(): string[] {
     // eslint-disable-next-line unicorn/prefer-spread
     return Array.from(this.internal.keys())

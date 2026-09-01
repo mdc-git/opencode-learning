@@ -12,74 +12,16 @@ import {
   applyOperations,
   bumpVersion,
   ensureSupportingFilesAbsent,
-  proposalFiles,
+  listSupportingFiles,
   reserveDirectory,
   supportPath,
-  writeCreatedSkill,
   yamlScalar
 } from './store-files.ts'
-import {
-  applyPending as applyPendingSkill,
-  getPending as getPendingSkill,
-  listOwned as listOwnedSkills,
-  listPending as listPendingSkills,
-  listSupportingFiles as listSkillSupportingFiles,
-  rejectPending as rejectPendingSkill,
-  stage as stageSkill
-} from './store-operations.ts'
-import { archiveSkill, promote as promoteSkill } from './store-promotion.ts'
-import type { Proposal, SupportingFile, UnknownRecord } from './types.ts'
-import type { OwnedSkill } from './store-types.ts'
-
-export { validateProposal } from './store-validation.ts'
-export { proposalInputSchema, validationInputSchema } from './store-schemas.ts'
-
-export type { OwnedSkill } from './store-types.ts'
-type PreparedPatch = { current: OwnedSkill; nextText: string; supportingFiles: SupportingFile[] }
-
-async function readOwnedSkill(
-  file: string,
-  skillId: string,
-  scope: string,
-  supportingFiles: (
-    skillId: string,
-    scope: string
-  ) => Promise<Array<{ path: string; bytes: number }>>
-): Promise<OwnedSkill | undefined> {
-  const text = await fs.readFile(file, 'utf8')
-  if (!text.includes(OWNER_MARKER)) {
-    return undefined
-  }
-
-  return {
-    skillId,
-    scope,
-    file,
-    dir: path.dirname(file),
-    text,
-    sha256: sha256(text),
-    supportingFiles: await supportingFiles(skillId, scope)
-  }
-}
-
-async function preparePatch(
-  store: SkillStore,
-  proposal: Proposal,
-  scope: string
-): Promise<PreparedPatch> {
-  const skillId = proposal.skillId ?? ''
-  const current = await requireOwnedSkill(store, skillId, scope)
-  assertExpectedSkillHash(current, proposal.expectedSha256, skillId)
-  const supportingFiles = proposal.addFiles ?? []
-  await ensureSupportingFilesAbsent(current.dir, supportingFiles)
-  const text = applyOperations(current.text, proposal.operations ?? [])
-  return { current, nextText: bumpVersion(text), supportingFiles }
-}
+import type { OwnedSkill, Proposal, SupportingFile } from './types.ts'
 
 const OWNER_MARKER = 'learning/owner: "opencode-learning"'
 
 export class SkillStore {
-  readonly projectRoot: string
   readonly projectRootSkills: string
   readonly globalRootSkills: string
   readonly stateRoot: string
@@ -97,7 +39,6 @@ export class SkillStore {
     globalSkillDir: string
     stateDir: string
   }) {
-    this.projectRoot = projectRoot
     this.projectRootSkills = path.resolve(projectRoot, projectSkillDir)
     this.globalRootSkills = path.resolve(globalSkillDir)
     this.stateRoot = path.resolve(projectRoot, stateDir)
@@ -105,37 +46,36 @@ export class SkillStore {
     this.archiveRoot = path.join(this.stateRoot, 'archive')
   }
 
-  root(scope = 'project'): string {
+  root(scope: string): string {
     return scope === 'global' ? this.globalRootSkills : this.projectRootSkills
   }
 
-  skillDir(skillId: string, scope = 'project'): string {
-    const invalidSkillId = skillId
+  skillDir(skillId: string, scope: string): string {
     if (!isSafeId(skillId)) {
-      throw new Error(`invalid skill id: ${invalidSkillId}`)
+      throw new Error(`invalid skill id: ${skillId}`)
     }
 
     return path.join(this.root(scope), skillId)
   }
 
-  skillPath(skillId: string, scope = 'project'): string {
-    return path.join(this.skillDir(skillId, scope), 'SKILL.md')
-  }
-
-  async listSupportingFiles(
-    skillId: string,
-    scope = 'project'
-  ): Promise<Array<{ path: string; bytes: number }>> {
-    return listSkillSupportingFiles(this, skillId, scope)
-  }
-
-  async getOwned(skillId: string, scope = 'project'): Promise<OwnedSkill | undefined> {
-    const file = this.skillPath(skillId, scope)
+  async getOwned(skillId: string, scope: string): Promise<OwnedSkill | undefined> {
+    const file = path.join(this.skillDir(skillId, scope), 'SKILL.md')
     await assertNoSymlinkPath(file)
     try {
-      return await readOwnedSkill(file, skillId, scope, async (id, currentScope) =>
-        this.listSupportingFiles(id, currentScope)
-      )
+      const text = await fs.readFile(file, 'utf8')
+      if (!text.includes(OWNER_MARKER)) {
+        return undefined
+      }
+
+      return {
+        skillId,
+        scope,
+        file,
+        dir: path.dirname(file),
+        text,
+        sha256: sha256(text),
+        supportingFiles: await listSupportingFiles(path.dirname(file))
+      }
     } catch (error: unknown) {
       if (hasErrorCode(error, 'ENOENT')) {
         return undefined
@@ -143,10 +83,6 @@ export class SkillStore {
 
       throw error
     }
-  }
-
-  async listOwned(scope = 'project'): Promise<OwnedSkill[]> {
-    return listOwnedSkills(this, scope)
   }
 
   renderCreated(proposal: Proposal): string {
@@ -168,15 +104,22 @@ ${skill.body.trim()}
 
   async create(
     proposal: Proposal,
-    { scope = 'project' }: { scope?: string } = {}
+    { scope }: { scope: string }
   ): Promise<{ file: string; text: string; sha256: string; supportingFiles: string[] }> {
-    const skillId = proposal.skillId ?? ''
+    const skillId = proposal.skillId!
     const dir = this.skillDir(skillId, scope)
     const file = path.join(dir, 'SKILL.md')
     const text = this.renderCreated(proposal)
-    const files = proposalFiles(proposal)
+    const files = proposal.skill!.files ?? []
     await reserveDirectory(dir, `skill already exists: ${proposal.skillId}`)
-    await writeCreatedSkill({ store: this, dir, file, text, files })
+
+    try {
+      await atomicWrite(file, text)
+      await this.addSupportingFiles(dir, files)
+    } catch (error) {
+      await fs.rm(dir, { recursive: true, force: true })
+      throw error
+    }
 
     return {
       file,
@@ -188,16 +131,28 @@ ${skill.body.trim()}
 
   async patch(
     proposal: Proposal,
-    { scope = 'project' }: { scope?: string } = {}
+    { scope }: { scope: string }
   ): Promise<{ file: string; text: string; sha256: string; addedFiles: string[] }> {
-    const prepared = await preparePatch(this, proposal, scope)
-    await atomicWrite(prepared.current.file, prepared.nextText)
-    await this.addSupportingFiles(prepared.current.dir, prepared.supportingFiles)
+    const skillId = proposal.skillId!
+    const current = await this.getOwned(skillId, scope)
+    if (current === undefined) {
+      throw new Error(`refusing to patch non-owned or missing skill: ${skillId}`)
+    }
+
+    if (current.sha256 !== proposal.expectedSha256) {
+      throw new Error(`stale patch for ${skillId}; skill changed since reflection`)
+    }
+
+    const supportingFiles = proposal.addFiles ?? []
+    await ensureSupportingFilesAbsent(current.dir, supportingFiles)
+    const nextText = bumpVersion(applyOperations(current.text, proposal.operations!))
+    await atomicWrite(current.file, nextText)
+    await this.addSupportingFiles(current.dir, supportingFiles)
     return {
-      file: prepared.current.file,
-      text: prepared.nextText,
-      sha256: sha256(prepared.nextText),
-      addedFiles: prepared.supportingFiles.map((item) => item.path)
+      file: current.file,
+      text: nextText,
+      sha256: sha256(nextText),
+      addedFiles: supportingFiles.map((item) => item.path)
     }
   }
 
@@ -205,59 +160,5 @@ ${skill.body.trim()}
     await Promise.all(
       files.map(async (item) => atomicWrite(supportPath(skillDir, item.path), item.content))
     )
-  }
-
-  async stage(proposal: Proposal, validation: UnknownRecord): Promise<{ id: string; dir: string }> {
-    return stageSkill(this, proposal, validation)
-  }
-
-  async listPending() {
-    return listPendingSkills(this)
-  }
-
-  async getPending(id: string) {
-    return getPendingSkill(this, id)
-  }
-
-  async applyPending(
-    id: string,
-    { confidenceThreshold = 0.72 }: { confidenceThreshold?: number } = {}
-  ) {
-    return applyPendingSkill(this, id, confidenceThreshold)
-  }
-
-  async rejectPending(id: string): Promise<void> {
-    return rejectPendingSkill(this, id)
-  }
-
-  async promote(skillId: string) {
-    return promoteSkill(this, skillId)
-  }
-
-  async archive(skillId: string, { scope = 'project' }: { scope?: string } = {}): Promise<boolean> {
-    return (await archiveSkill(this, skillId, scope)) !== undefined
-  }
-}
-
-async function requireOwnedSkill(
-  store: SkillStore,
-  skillId: string,
-  scope: string
-): Promise<OwnedSkill> {
-  const current = await store.getOwned(skillId, scope)
-  if (current === undefined) {
-    throw new Error(`refusing to patch non-owned or missing skill: ${skillId}`)
-  }
-
-  return current
-}
-
-function assertExpectedSkillHash(
-  current: OwnedSkill,
-  expectedSha256: string | undefined,
-  skillId: string
-): void {
-  if (current.sha256 !== expectedSha256) {
-    throw new Error(`stale patch for ${skillId}; skill changed since reflection`)
   }
 }

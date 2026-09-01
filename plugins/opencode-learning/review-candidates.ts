@@ -1,9 +1,17 @@
-import { trimText } from './shared.ts'
-import type { OpenCodeContext } from './sdk.ts'
+import { isSafeId, trimText } from './shared.ts'
+import type { OpenCodeContext, SkillInfo } from './sdk.ts'
 import type { Candidate, ExperienceSnapshot, Proposal, UnknownRecord, Validation } from './types.ts'
 import type { SkillStore } from './store.ts'
 import type { TriggerDecision } from './scoring.ts'
-import { listSkills } from './review-candidates-list.ts'
+
+async function listSkills(ctx: OpenCodeContext): Promise<readonly SkillInfo[]> {
+  try {
+    const response = await ctx.skill.list()
+    return response.data ?? []
+  } catch {
+    return []
+  }
+}
 
 function tokens(text: unknown): Set<string> {
   const matches = String(text)
@@ -38,10 +46,10 @@ function sharedTokenCount(first: Set<string>, second: Set<string>): number {
 function reviewQuery(exp: ExperienceSnapshot): string {
   return [
     exp.goal,
-    ...(exp.contextTail ?? []).map((x) => x.text ?? x),
-    ...(exp.toolCalls ?? [])
+    ...exp.contextTail.map((x) => x.text),
+    ...exp.toolCalls
       .slice(-16)
-      .map((x) => `${trimText(x.tool)} ${trimText(x.input)} ${trimText(x.result)}`)
+      .map((x) => `${trimText(x.tool, 4e3)} ${trimText(x.input, 4e3)} ${trimText(x.result, 4e3)}`)
   ].join('\n')
 }
 
@@ -76,7 +84,7 @@ export async function retrieveCandidates({
     .slice(0, maxCandidates)
   const enriched = await Promise.all(
     ranked.map(async (item) => {
-      const owned = await store.getOwned(item.id, 'project')
+      const owned = isSafeId(item.id) ? await store.getOwned(item.id, 'project') : undefined
       return owned === undefined
         ? { ...item, owned: false }
         : {
@@ -96,12 +104,12 @@ export async function retrieveCandidates({
 function trajectoryPayload(exp: ExperienceSnapshot): UnknownRecord {
   return {
     goal: trimText(exp.goal, 2500),
-    contextTail: exp.contextTail?.slice(-8),
-    corrections: exp.corrections?.slice(-10),
+    contextTail: exp.contextTail.slice(-8),
+    corrections: exp.corrections.slice(-10),
     skillsUsed: exp.skillsUsed,
     recoveries: exp.recoveries,
     verificationSteps: exp.verificationSteps,
-    toolCalls: exp.toolCalls?.slice(-50)
+    toolCalls: exp.toolCalls.slice(-50)
   }
 }
 
@@ -147,27 +155,18 @@ ${triggerBlock}
 Submit exactly one proposal through learning_submit_proposal. Create and patch decisions must include skillId as lowercase kebab-case with 1-64 characters. For a create, supporting files may be supplied as skill.files. For a patch, addFiles may create new supporting files but must never overwrite an existing supporting file. Do not edit files directly.`
 }
 
-function triggerReasonLines(reasons: Record<string, number>): string {
-  return Object.keys(reasons).length > 0
-    ? Object.entries(reasons)
-        .map(([key, value]) => `- ${key}: ${value}`)
-        .join('\n')
-    : '- (none)'
-}
-
-function triggerSignalText(triggerDecision: TriggerDecision): string {
-  const signalText = (triggerDecision.strongSignals ?? []).join(', ')
-  return signalText.length > 0 ? signalText : 'none'
-}
-
 function formatTriggerSignals(triggerDecision: TriggerDecision | undefined): string {
   if (!triggerDecision) {
     return ''
   }
 
-  const reasons = triggerDecision.reasons ?? {}
-  const reasonLines = triggerReasonLines(reasons)
-  const signals = triggerSignalText(triggerDecision)
+  const { reasons } = triggerDecision
+  const reasonText = Object.entries(reasons)
+    .map(([key, value]) => `- ${key}: ${value}`)
+    .join('\n')
+  const reasonLines = reasonText.length > 0 ? reasonText : '- (none)'
+  const signalText = triggerDecision.strongSignals.join(', ')
+  const signals = signalText.length > 0 ? signalText : 'none'
   return `
 ## Trigger signals
 

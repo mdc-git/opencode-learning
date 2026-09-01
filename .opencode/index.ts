@@ -1,3 +1,3 @@
-import plugin from './local-learning.ts'
+import plugin from '../plugins/opencode-learning/index.ts'
 
-export default plugin
+export default { ...plugin, id: 'local.learning_skills' }

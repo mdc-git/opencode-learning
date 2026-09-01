@@ -2,27 +2,15 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { assertNoSymlinkPath, atomicWrite, hasErrorCode, isRecord, isSafeId } from './shared.ts'
-import { applyOperations, bumpVersion, readOptionalText, safePending, walk } from './store-files.ts'
+import { applyOperations, bumpVersion, readOptionalText, safePending } from './store-files.ts'
 import { validateProposal } from './store-validation.ts'
-import type { Proposal, UnknownRecord } from './types.ts'
-import type { OwnedSkill } from './store-types.ts'
+import type { OwnedSkill, Proposal, UnknownRecord } from './types.ts'
+import type { SkillStore } from './store.ts'
 
 type PendingProposal = { id: string; proposal: Proposal; validation: UnknownRecord }
 type PendingDetails = PendingProposal & { previews: Record<string, string> }
 
-export type StoreOperations = {
-  pendingRoot: string
-  archiveRoot: string
-  globalRootSkills: string
-  root(scope?: string): string
-  skillDir(skillId: string, scope?: string): string
-  getOwned(skillId: string, scope?: string): Promise<OwnedSkill | undefined>
-  renderCreated(proposal: Proposal): string
-  create(proposal: Proposal, options?: { scope?: string }): Promise<unknown>
-  patch(proposal: Proposal, options?: { scope?: string }): Promise<unknown>
-}
-
-async function stageCreate(store: StoreOperations, dir: string, proposal: Proposal): Promise<void> {
+async function stageCreate(store: SkillStore, dir: string, proposal: Proposal): Promise<void> {
   const files = proposal.skill?.files ?? []
   await Promise.all([
     atomicWrite(path.join(dir, 'SKILL.preview.md'), store.renderCreated(proposal)),
@@ -30,7 +18,7 @@ async function stageCreate(store: StoreOperations, dir: string, proposal: Propos
   ])
 }
 
-async function stagePatch(store: StoreOperations, dir: string, proposal: Proposal): Promise<void> {
+async function stagePatch(store: SkillStore, dir: string, proposal: Proposal): Promise<void> {
   const current = await store.getOwned(proposal.skillId ?? 'none', proposal.scope ?? 'project')
   if (current === undefined) {
     return
@@ -40,7 +28,7 @@ async function stagePatch(store: StoreOperations, dir: string, proposal: Proposa
 }
 
 async function writePatchPreview(
-  store: StoreOperations,
+  store: SkillStore,
   dir: string,
   proposal: Proposal,
   current: OwnedSkill
@@ -57,21 +45,7 @@ async function writePatchPreview(
   await Promise.all(writes)
 }
 
-export async function listSupportingFiles(
-  store: Pick<StoreOperations, 'skillDir'>,
-  skillId: string,
-  scope = 'project'
-): Promise<Array<{ path: string; bytes: number }>> {
-  const root = store.skillDir(skillId, scope)
-  const out: Array<{ path: string; bytes: number }> = []
-  await walk(root, root, out)
-  return out.filter((item) => item.path !== 'SKILL.md').slice(0, 100)
-}
-
-export async function listOwned(
-  store: Pick<StoreOperations, 'root' | 'getOwned'>,
-  scope = 'project'
-): Promise<OwnedSkill[]> {
+export async function listOwned(store: SkillStore, scope: string): Promise<OwnedSkill[]> {
   const root = store.root(scope)
   let dirs
   try {
@@ -93,7 +67,7 @@ export async function listOwned(
 }
 
 export async function stage(
-  store: StoreOperations,
+  store: SkillStore,
   proposal: Proposal,
   validation: UnknownRecord
 ): Promise<{ id: string; dir: string }> {
@@ -114,9 +88,7 @@ export async function stage(
   return { id, dir }
 }
 
-export async function listPending(
-  store: Pick<StoreOperations, 'pendingRoot'>
-): Promise<PendingProposal[]> {
+export async function listPending(store: SkillStore): Promise<PendingProposal[]> {
   let entries
   try {
     entries = await fs.readdir(store.pendingRoot, { withFileTypes: true })
@@ -148,10 +120,7 @@ export async function listPending(
     .toSorted((a, b) => b.id.localeCompare(a.id))
 }
 
-export async function getPending(
-  store: Pick<StoreOperations, 'pendingRoot'>,
-  id: string
-): Promise<PendingDetails> {
+export async function getPending(store: SkillStore, id: string): Promise<PendingDetails> {
   const dir = safePending(store.pendingRoot, id)
   await assertNoSymlinkPath(dir)
   const raw = JSON.parse(await fs.readFile(path.join(dir, 'proposal.json'), 'utf8')) as {
@@ -198,35 +167,28 @@ function assertPendingProposal(proposal: Proposal, confidenceThreshold: number):
   }
 }
 
-async function applyPendingProposal(store: StoreOperations, proposal: Proposal): Promise<unknown> {
-  if (proposal.decision === 'create') {
-    return store.create(proposal, { scope: 'project' })
-  }
-
-  if (proposal.decision === 'patch') {
-    return store.patch(proposal, { scope: 'project' })
-  }
-
-  return { skipped: true }
-}
-
 export async function applyPending(
-  store: StoreOperations,
+  store: SkillStore,
   id: string,
-  confidenceThreshold = 0.72
+  confidenceThreshold: number
 ): Promise<{ result: unknown; proposal: Proposal }> {
   const proposal = await readPendingProposal(store.pendingRoot, id)
   assertProjectScope(proposal)
   const projectProposal = { ...proposal, scope: 'project' }
   assertPendingProposal(projectProposal, confidenceThreshold)
-  const result = await applyPendingProposal(store, projectProposal)
+  let result: unknown
+  if (projectProposal.decision === 'create') {
+    result = await store.create(projectProposal, { scope: 'project' })
+  } else if (projectProposal.decision === 'patch') {
+    result = await store.patch(projectProposal, { scope: 'project' })
+  } else {
+    result = { skipped: true }
+  }
+
   await fs.rm(safePending(store.pendingRoot, id), { recursive: true, force: true })
   return { result, proposal: projectProposal }
 }
 
-export async function rejectPending(
-  store: Pick<StoreOperations, 'pendingRoot'>,
-  id: string
-): Promise<void> {
+export async function rejectPending(store: SkillStore, id: string): Promise<void> {
   await fs.rm(safePending(store.pendingRoot, id), { recursive: true, force: true })
 }

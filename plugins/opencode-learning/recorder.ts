@@ -1,10 +1,5 @@
-import {
-  contextMessages,
-  contextSessionId,
-  normalizeContextMessages,
-  recordContextCorrections,
-  updateExperienceGoal
-} from './recorder-context.ts'
+import type { SessionContext } from '@opencode-ai/plugin/promise/session'
+import { observeContext } from './recorder-context.ts'
 import {
   appendToolCall,
   consumePendingTool,
@@ -12,45 +7,22 @@ import {
   isNewTerminalEvent,
   observeToolCall,
   pendingKeysForSession,
-  pendingToolInput,
-  toolAfterTarget,
-  toolBeforeTarget,
-  toolStatus
+  toolTarget
 } from './recorder-tools.ts'
 import { SESSION_ID_KEY, trimText } from './shared.ts'
-import type { ContextEvent, ToolAfterEvent, ToolBeforeEvent } from './sdk.ts'
+import type { ToolAfterEvent, ToolBeforeEvent } from './sdk.ts'
 import type { ExperienceState, ExperienceSnapshot, PendingTool, SessionHistory } from './types.ts'
 
 export class ExperienceRecorder {
   private readonly maxEventsPerSession: number
   private readonly sessions = new Map<string, ExperienceState>()
   private readonly history = new Map<string, SessionHistory>()
-  private readonly pendingTools = new Map<string, PendingTool>()
+  private readonly pendingTools = new Map<string, PendingTool[]>()
   private readonly pendingToolTombstones = new Map<string, Set<string>>()
   private readonly terminalEventIds = new Map<string, Set<string>>()
 
   constructor({ maxEventsPerSession = 120 }: { maxEventsPerSession?: number } = {}) {
     this.maxEventsPerSession = maxEventsPerSession
-  }
-
-  private clearSession(sessionID: string): void {
-    this.sessions.delete(sessionID)
-    this.history.delete(sessionID)
-    this.terminalEventIds.delete(sessionID)
-    this.pendingToolTombstones.delete(sessionID)
-    for (const [key, pending] of this.pendingTools) {
-      if (pending.sessionID === sessionID) {
-        this.pendingTools.delete(key)
-      }
-    }
-  }
-
-  private clearAll(): void {
-    this.sessions.clear()
-    this.history.clear()
-    this.pendingTools.clear()
-    this.pendingToolTombstones.clear()
-    this.terminalEventIds.clear()
   }
 
   private pendingTombstonesFor(sessionID: string): Set<string> {
@@ -89,67 +61,50 @@ export class ExperienceRecorder {
     return this.sessions.get(sessionID)!
   }
 
-  observeContext(event: ContextEvent): ExperienceState | undefined {
-    const sessionId = contextSessionId(event)
-    if (sessionId.length === 0) {
-      return undefined
-    }
-
-    const exp = this.get(sessionId)
-    exp.updatedAt = Date.now()
-    const messages = contextMessages(event)
-    const tail = normalizeContextMessages(messages).slice(-8)
-    exp.contextTail = tail
-    const users = tail.filter((x) => x.role === 'user')
-    updateExperienceGoal(exp, sessionId, users, this.history)
-    recordContextCorrections(exp, users)
-    return exp
+  observeContext(event: SessionContext): void {
+    const exp = this.get(event.sessionID)
+    observeContext(exp, event, this.history)
   }
 
   toolBefore(event: ToolBeforeEvent): void {
-    const target = toolBeforeTarget(event)
-    if (target === undefined) {
+    const target = toolTarget(event)
+    const tombstones = this.pendingToolTombstones.get(target.sessionId) ?? new Set<string>()
+    if (tombstones.has(target.key)) {
       return
     }
 
-    const tombstones = this.pendingToolTombstones.get(target.sessionId)
-    if (isPendingToolTombstone(tombstones, target.key)) {
-      return
-    }
-
-    this.pendingTools.set(target.key, {
+    const pending = this.pendingTools.get(target.key)
+    const current = {
       [SESSION_ID_KEY]: target.sessionId,
-      callId: event.id,
-      tool: target.tool ?? '',
+      tool: event.tool,
       input: trimText(event.input, 2500),
       startedAt: Date.now()
-    })
+    }
+    if (pending === undefined) {
+      this.pendingTools.set(target.key, [current])
+      return
+    }
+
+    pending.push(current)
   }
 
   toolAfter(event: ToolAfterEvent): ExperienceState | undefined {
-    const target = toolAfterTarget(event)
-    if (target === undefined) {
-      return undefined
-    }
-
-    const lookup = consumePendingTool(
-      this.pendingTools,
-      this.pendingToolTombstones.get(target.sessionId),
-      target.key
-    )
-    if (lookup.isIgnored) {
+    const target = toolTarget(event)
+    const input = trimText(event.input, 2500)
+    const pending = consumePendingTool(this.pendingTools, target.key, event.tool, input)
+    if (
+      pending === undefined &&
+      this.pendingToolTombstones.get(target.sessionId)?.has(target.key) === true
+    ) {
       return undefined
     }
 
     const exp = this.get(target.sessionId)
-    const status = toolStatus(event.status)
-    const input = pendingToolInput(lookup, event)
     const record = createToolCall({
       event,
       turn: exp.turn,
       input,
-      status,
-      pending: lookup.pending
+      pending
     })
     appendToolCall(exp, record, this.maxEventsPerSession)
     exp.updatedAt = Date.now()
@@ -161,12 +116,8 @@ export class ExperienceRecorder {
   finishTurn(
     sessionID: string,
     terminalType: string,
-    eventID?: string
+    eventID: string
   ): ExperienceSnapshot | undefined {
-    if (sessionID.length === 0) {
-      return undefined
-    }
-
     if (!isNewTerminalEvent(this.terminalEventIds, sessionID, eventID)) {
       return undefined
     }
@@ -200,13 +151,12 @@ export class ExperienceRecorder {
     }
   }
 
-  clear(sessionID?: string): void {
-    if (sessionID === undefined || sessionID.length === 0) {
-      this.clearAll()
-      return
-    }
-
-    this.clearSession(sessionID)
+  clear(): void {
+    this.sessions.clear()
+    this.history.clear()
+    this.pendingTools.clear()
+    this.pendingToolTombstones.clear()
+    this.terminalEventIds.clear()
   }
 
   take(sessionID: string): ExperienceSnapshot | undefined {
@@ -231,8 +181,4 @@ export class ExperienceRecorder {
       tombstones.add(key)
     }
   }
-}
-
-function isPendingToolTombstone(tombstones: Set<string> | undefined, key: string): boolean {
-  return tombstones?.has(key) ?? false
 }

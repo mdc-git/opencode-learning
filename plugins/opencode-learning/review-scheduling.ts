@@ -1,57 +1,156 @@
-import { SESSION_ID_KEY } from './shared.ts'
 import {
   canStartReview,
   evaluateAutomaticReview,
-  isReviewSessionUnavailable,
-  queuePendingReview,
-  shouldReviewAfterExecution
+  isReviewSessionUnavailable
 } from './review-trigger.ts'
 import type { InternalMailbox } from './mailbox.ts'
 import type { ExperienceRecorder } from './recorder.ts'
+import { runReview, type ReviewOptions } from './review.ts'
+import type { ReviewOutcome } from './review-results.ts'
+import {
+  createClaimGuard,
+  markAutomaticReview,
+  waitForPreviousOwner,
+  type ReviewState
+} from './review-state.ts'
 import type { OpenCodeContext } from './sdk.ts'
+import type { SkillStore } from './store.ts'
 import type { Telemetry } from './telemetry.ts'
 import type { ExperienceSnapshot, LearningConfig } from './types.ts'
 import type { TriggerDecision } from './scoring.ts'
-import {
-  normalizeReviewOptions,
-  type PreparedReview,
-  type ReviewOptions,
-  type ReviewOutcome,
-  type ReviewPipelineOptions,
-  type ReviewRequest
-} from './review-types.ts'
 
-export abstract class ReviewScheduling {
-  protected readonly ctx: OpenCodeContext
-  protected readonly recorder: ExperienceRecorder
-  protected readonly store: ReviewPipelineOptions['store']
-  protected readonly telemetry: Telemetry
-  protected readonly mailbox: InternalMailbox
-  protected readonly config: LearningConfig
-  protected readonly inFlight = new Set<string>()
-  protected readonly requests = new Map<string, ReviewRequest>()
-  protected readonly pending = new Map<string, ReviewRequest>()
-  protected disposed = false
-  protected readonly lastAutomaticReviewTurn = new Map<string, number>()
-  protected readonly successfulTurns = new Map<string, number>()
-  protected readonly reviewedFingerprints = new Map<string, Map<string, string>>()
-  protected readonly lastSuppressedFingerprint = new Map<string, string>()
-  protected readonly activeReviews = new Set<Promise<unknown>>()
+type PreparedReview = { batch: ExperienceSnapshot; candidate: TriggerDecision | undefined }
+type ReviewPipelineOptions = {
+  ctx: OpenCodeContext
+  recorder: ExperienceRecorder
+  store: SkillStore
+  telemetry: Telemetry
+  mailbox: InternalMailbox
+  config: LearningConfig
+  state: ReviewState
+}
 
-  constructor({ ctx, recorder, store, telemetry, mailbox, config }: ReviewPipelineOptions) {
+export class ReviewPipeline {
+  private readonly state: ReviewState
+  private readonly recorder: ExperienceRecorder
+  private readonly canClaimSession: ReturnType<typeof createClaimGuard>
+  private disposed = false
+  private readonly invalidatedSessions = new Set<string>()
+  private readonly activeReviews = new Set<Promise<unknown>>()
+  private readonly activeReviewsBySession = new Map<string, Set<Promise<unknown>>>()
+  readonly ctx: OpenCodeContext
+  readonly store: SkillStore
+  readonly telemetry: Telemetry
+  readonly mailbox: InternalMailbox
+  readonly config: LearningConfig
+
+  constructor({ ctx, recorder, store, telemetry, mailbox, config, state }: ReviewPipelineOptions) {
     this.ctx = ctx
     this.recorder = recorder
     this.store = store
     this.telemetry = telemetry
     this.mailbox = mailbox
     this.config = config
+    this.state = state
+    this.canClaimSession = createClaimGuard(
+      state,
+      this,
+      this.invalidatedSessions,
+      () => this.disposed
+    )
   }
 
-  protected abstract reviewWithRetry(
+  private recordFingerprint(
     sessionID: string,
-    exp: ExperienceSnapshot,
-    options?: ReviewOptions
-  ): Promise<ReviewOutcome>
+    triggerDecision: TriggerDecision | undefined,
+    outcome: string
+  ): void {
+    if (triggerDecision === undefined || triggerDecision.fingerprint.length === 0) {
+      return
+    }
+
+    const reviewed = this.state.reviewedFingerprints.get(sessionID) ?? new Map<string, string>()
+    reviewed.set(triggerDecision.fingerprint, outcome)
+    this.state.reviewedFingerprints.set(sessionID, reviewed)
+  }
+
+  private recordReviewOutcome(
+    sessionID: string,
+    candidate: TriggerDecision | undefined,
+    outcome: ReviewOutcome
+  ): ReviewOutcome {
+    if (['no-change', 'staged', 'applied'].includes(outcome.status)) {
+      this.recordFingerprint(
+        sessionID,
+        candidate,
+        outcome.status === 'no-change' ? 'no-change' : 'accepted'
+      )
+    }
+
+    return outcome
+  }
+
+  private canDrain(sessionID: string): boolean {
+    return this.isActive(sessionID) && !this.state.inFlight.has(sessionID)
+  }
+
+  private isUnavailable(sessionID: string): boolean {
+    return isReviewSessionUnavailable(sessionID, !this.isActive(sessionID), this.mailbox)
+  }
+
+  private captureAutomaticReview(
+    sessionID: string,
+    exp: ExperienceSnapshot
+  ): PreparedReview | undefined {
+    const candidate = evaluateAutomaticReview({
+      sessionId: sessionID,
+      exp,
+      scoreThreshold: this.config.scoreThreshold,
+      workflowCooldownTurns: this.config.workflowCooldownTurns,
+      successfulTurns: this.state.successfulTurns,
+      lastAutomaticReviewTurn: this.state.lastAutomaticReviewTurn,
+      reviewedFingerprints: this.state.reviewedFingerprints,
+      lastSuppressedFingerprint: this.state.lastSuppressedFingerprint,
+      telemetry: this.telemetry
+    })
+    if (candidate === undefined) {
+      return undefined
+    }
+
+    const batch = this.recorder.take(sessionID)
+    return batch === undefined ? undefined : { batch, candidate }
+  }
+
+  isActive(sessionID: string): boolean {
+    return this.canClaimSession(sessionID, false)
+  }
+
+  invalidateSession(sessionID: string): void {
+    this.invalidatedSessions.add(sessionID)
+  }
+
+  async claimSession(sessionID: string, isExpectedOwner: boolean): Promise<void> {
+    if (!this.canClaimSession(sessionID, isExpectedOwner)) {
+      return
+    }
+
+    const claim = Symbol('review-session-claim')
+    this.state.claims.set(sessionID, claim)
+    await waitForPreviousOwner(this.state, this, sessionID)
+
+    if (this.state.claims.get(sessionID) !== claim) {
+      return
+    }
+
+    if (!this.canClaimSession(sessionID, isExpectedOwner)) {
+      return
+    }
+
+    this.invalidatedSessions.delete(sessionID)
+    this.state.owners.set(sessionID, this)
+    this.state.claims.delete(sessionID)
+    this.drain(sessionID)
+  }
 
   captureReview(sessionID: string, isForced: boolean): PreparedReview | undefined {
     const exp = this.recorder.snapshot(sessionID)
@@ -60,79 +159,50 @@ export abstract class ReviewScheduling {
     }
 
     if (isForced) {
-      return this.takeReviewBatch(sessionID, undefined)
+      const batch = this.recorder.take(sessionID)
+      return batch === undefined ? undefined : { batch, candidate: undefined }
     }
 
-    const candidate = this.automaticCandidate(sessionID, exp)
-    if (candidate === undefined) {
-      return undefined
+    return this.captureAutomaticReview(sessionID, exp)
+  }
+
+  schedule(sessionID: string, options: { force?: boolean }): Record<string, unknown> {
+    const isForcedRequest = options.force === true
+    if (this.isUnavailable(sessionID)) {
+      return {
+        scheduled: false,
+        force: isForcedRequest,
+        reason: 'session is not eligible for review'
+      }
     }
 
-    return this.takeReviewBatch(sessionID, candidate)
+    const isForced = isForcedRequest || this.state.requests.get(sessionID) === true
+    this.state.requests.set(sessionID, isForced)
+    return { scheduled: true, force: isForced }
   }
 
-  automaticCandidate(sessionID: string, exp: ExperienceSnapshot): TriggerDecision | undefined {
-    return evaluateAutomaticReview({
-      [SESSION_ID_KEY]: sessionID,
-      exp,
-      scoreThreshold: this.config.scoreThreshold,
-      workflowCooldownTurns: this.config.workflowCooldownTurns,
-      successfulTurns: this.successfulTurns,
-      lastAutomaticReviewTurn: this.lastAutomaticReviewTurn,
-      reviewedFingerprints: this.reviewedFingerprints,
-      lastSuppressedFingerprint: this.lastSuppressedFingerprint,
-      telemetry: this.telemetry
-    })
-  }
-
-  takeReviewBatch(
-    sessionID: string,
-    candidate: TriggerDecision | undefined
-  ): PreparedReview | undefined {
-    const batch = this.recorder.take(sessionID)
-    return batch === undefined ? undefined : { batch, candidate }
-  }
-
-  schedule(
-    sessionID: string,
-    { force = false }: { force?: boolean } = {}
-  ): Record<string, unknown> {
-    if (!this.isSchedulable(sessionID)) {
-      return { scheduled: false, force, reason: 'session is not eligible for review' }
-    }
-
-    return scheduleRequest(this.requests, sessionID, force)
-  }
-
-  isSchedulable(sessionID: string): boolean {
-    return !isReviewSessionUnavailable(sessionID, this.disposed, this.mailbox)
-  }
-
-  executionFinished(sessionID: string, options?: { terminalType?: string }): void {
-    if (isReviewSessionUnavailable(sessionID, this.disposed, this.mailbox)) {
+  executionFinished(sessionID: string, terminalType: string): void {
+    if (this.isUnavailable(sessionID)) {
       return
     }
 
-    const terminalType = executionTerminalType(options)
     const isSucceeded = terminalType === 'session.execution.succeeded'
     this.recordSuccessfulTurn(sessionID, isSucceeded)
-    const isForced = this.consumeReviewRequest(sessionID)
-    if (!shouldReviewAfterExecution(isForced, isSucceeded)) {
+    const isForced = this.state.requests.get(sessionID) === true
+    this.state.requests.delete(sessionID)
+    if (!isForced && !isSucceeded) {
       return
     }
 
     this.dispatchReview(sessionID, terminalType, isForced)
   }
 
-  consumeReviewRequest(sessionID: string): boolean {
-    const request = this.requests.get(sessionID)
-    this.requests.delete(sessionID)
-    return Boolean(request?.force)
-  }
-
   dispatchReview(sessionID: string, terminalType: string, isForced: boolean): void {
-    if (this.inFlight.has(sessionID)) {
-      queuePendingReview(this.pending, sessionID, isForced, terminalType)
+    if (this.state.inFlight.has(sessionID)) {
+      const pending = this.state.pending.get(sessionID) ?? { force: false, terminalType }
+      pending.force ||= isForced
+      pending.terminalType = terminalType
+      this.state.pending.set(sessionID, pending)
       return
     }
 
@@ -144,20 +214,19 @@ export abstract class ReviewScheduling {
       return
     }
 
-    this.successfulTurns.set(sessionID, (this.successfulTurns.get(sessionID) ?? 0) + 1)
+    this.state.successfulTurns.set(sessionID, (this.state.successfulTurns.get(sessionID) ?? 0) + 1)
     void this.telemetry.recordSuccessfulTurn().catch((error: unknown) => {
       console.error('[opencode-learning] successful-turn telemetry failed', error)
     })
   }
 
-  start(sessionID: string, options: ReviewOptions = {}): void {
-    const { force, terminalType } = normalizeReviewOptions(options)
+  start(sessionID: string, { force, terminalType }: ReviewOptions): void {
     if (
       !canStartReview({
-        [SESSION_ID_KEY]: sessionID,
-        isDisposed: this.disposed,
+        sessionId: sessionID,
+        isDisposed: this.isUnavailable(sessionID),
         isEnabled: this.config.enabled,
-        inFlight: this.inFlight,
+        inFlight: this.state.inFlight,
         mailbox: this.mailbox
       })
     ) {
@@ -169,58 +238,63 @@ export abstract class ReviewScheduling {
       return
     }
 
-    this.inFlight.add(sessionID)
-    this.markAutomaticReview(sessionID, force)
-    const review = this.reviewWithRetry(sessionID, prepared.batch, {
+    this.state.inFlight.add(sessionID)
+    markAutomaticReview(this.state, sessionID, force)
+    const review = runReview(this, sessionID, prepared.batch, {
       force,
       terminalType,
       triggerDecision: prepared.candidate
     })
+      .then((outcome) => this.recordReviewOutcome(sessionID, prepared.candidate, outcome))
       .catch((error: unknown) => {
         console.error('[opencode-learning] review failed', error)
       })
       .finally(() => {
-        this.inFlight.delete(sessionID)
+        this.state.inFlight.delete(sessionID)
         this.drain(sessionID)
       })
     this.activeReviews.add(review)
-    void review
-      .then(() => this.activeReviews.delete(review))
-      .catch(() => this.activeReviews.delete(review))
-  }
-
-  markAutomaticReview(sessionID: string, isForced: boolean): void {
-    if (!isForced) {
-      this.lastAutomaticReviewTurn.set(sessionID, this.successfulTurns.get(sessionID) ?? 0)
-    }
+    const sessionReviews = this.activeReviewsBySession.get(sessionID) ?? new Set<Promise<unknown>>()
+    sessionReviews.add(review)
+    this.activeReviewsBySession.set(sessionID, sessionReviews)
+    void review.finally(() => {
+      this.activeReviews.delete(review)
+      sessionReviews.delete(review)
+      if (sessionReviews.size === 0) {
+        this.activeReviewsBySession.delete(sessionID)
+      }
+    })
   }
 
   drain(sessionID: string): void {
-    if (this.disposed || this.inFlight.has(sessionID)) {
+    if (!this.canDrain(sessionID)) {
       return
     }
 
-    const pending = this.pending.get(sessionID)
+    const pending = this.state.pending.get(sessionID)
     if (!pending) {
       return
     }
 
-    this.pending.delete(sessionID)
-    this.start(sessionID, pending)
+    this.state.pending.delete(sessionID)
+    const owner = this.state.owners.get(sessionID) ?? this
+    owner.start(sessionID, pending)
   }
-}
 
-function scheduleRequest(
-  requests: Map<string, ReviewRequest>,
-  sessionID: string,
-  isForced: boolean
-): Record<string, unknown> {
-  const request = requests.get(sessionID) ?? { force: false }
-  request.force ||= isForced
-  requests.set(sessionID, request)
-  return { scheduled: true, force: request.force }
-}
+  cleanup(): void {
+    this.disposed = true
+  }
 
-function executionTerminalType(options: { terminalType?: string } | undefined): string {
-  return options?.terminalType ?? 'session.execution.succeeded'
+  async waitForReviews(): Promise<void> {
+    await Promise.allSettled(this.activeReviews)
+  }
+
+  async waitForSession(sessionID: string): Promise<void> {
+    const activeReviews = this.activeReviewsBySession.get(sessionID)
+    if (activeReviews === undefined) {
+      return
+    }
+
+    await Promise.allSettled(activeReviews)
+  }
 }

@@ -1,10 +1,13 @@
 import path from 'node:path'
 import { daysSince, readJson, writeJson } from './shared.ts'
-import type { CuratorConfig, LearningConfig } from './types.ts'
-import type { OwnedSkill, SkillStore } from './store.ts'
+import type { CuratorConfig, LearningConfig, OwnedSkill } from './types.ts'
+import type { SkillStore } from './store.ts'
+import { archiveSkill } from './store-promotion.ts'
+import { listOwned } from './store-operations.ts'
 import type { SkillTelemetry } from './telemetry-state.ts'
 import type { Telemetry } from './telemetry.ts'
-import type { CuratorResult } from './review-types.ts'
+
+type CuratorResult = { stale: string[]; archived: string[] } | { skipped: string }
 
 export class Curator {
   private readonly config: LearningConfig
@@ -40,7 +43,7 @@ export class Curator {
   }
 
   async run(): Promise<{ stale: string[]; archived: string[] }> {
-    const owned = await this.store.listOwned('project')
+    const owned = await listOwned(this.store, 'project')
     const states = await Promise.all(
       owned.map(async (item) =>
         curateOwnedSkill(this.store, this.telemetry, item, this.config.curator)
@@ -84,12 +87,8 @@ async function curateOwnedSkill(
   config: CuratorConfig
 ): Promise<{ id: string; state: 'archived' | 'stale' | 'active' | undefined }> {
   const meta = telemetry.state.skills[item.skillId]
-  const age = skillAge(meta)
+  const age = daysSince(skillTimestamp(meta))
   return curateByAge({ store, meta, skillId: item.skillId, age, config })
-}
-
-function skillAge(meta: SkillTelemetry | undefined): number {
-  return daysSince(skillTimestamp(meta))
 }
 
 function skillTimestamp(meta: SkillTelemetry | undefined): number {
@@ -130,8 +129,8 @@ async function archiveOwnedSkill(
   meta: SkillTelemetry | undefined,
   skillId: string
 ): Promise<{ id: string; state: 'archived' | 'stale' | 'active' | undefined }> {
-  const isArchived = await store.archive(skillId, { scope: 'project' })
-  if (!isArchived) {
+  const archivePath = await archiveSkill(store, skillId, 'project')
+  if (archivePath === undefined) {
     return { id: skillId, state: undefined }
   }
 

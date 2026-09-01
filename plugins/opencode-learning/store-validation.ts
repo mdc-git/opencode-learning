@@ -1,11 +1,5 @@
 import { isRecord, isSafeId } from './shared.ts'
-import type {
-  Proposal,
-  SectionOperation,
-  SupportingFile,
-  UnknownRecord,
-  Validation
-} from './types.ts'
+import type { Proposal, SectionOperation, SupportingFile, Validation } from './types.ts'
 
 const SECRET_PATTERNS = [
   /-----begin (?:rsa |ec |openssh )?private key-----/iv,
@@ -23,12 +17,8 @@ const TRANSIENT_PATTERNS = [
 
 export function validateProposal(
   proposal: unknown,
-  { confidenceThreshold = 0.72 }: { confidenceThreshold?: number } = {}
+  { confidenceThreshold }: { confidenceThreshold: number }
 ): Validation {
-  return validateProposalAt(proposal, confidenceThreshold)
-}
-
-function validateProposalAt(proposal: unknown, confidenceThreshold: number): Validation {
   const errors: string[] = []
   const warnings: string[] = []
   if (!isRecord(proposal)) {

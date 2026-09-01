@@ -8,7 +8,7 @@ export { normalizeTelemetryState } from './telemetry-state.ts'
 export default Plugin.define({
   id: 'github.learning_skills',
   async setup(ctx: OpenCodeContext): Promise<(() => Promise<void>) | undefined> {
-    const config = loadConfig(ctx.options as unknown)
+    const config = loadConfig(ctx.options)
     if (!config.enabled) {
       return
     }

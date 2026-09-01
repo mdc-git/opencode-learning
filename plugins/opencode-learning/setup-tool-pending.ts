@@ -1,6 +1,9 @@
-import type { AddLearningTool, PendingInput, SessionRuntimeFor } from './setup-types.ts'
-import { objectOutput, result } from './setup-tool-helpers.ts'
+import type { SessionRuntimeFor } from './setup-runtime.ts'
+import { OBJECT_OUTPUT, result, type AddLearningTool } from './setup-tool-helpers.ts'
 import type { SkillStore } from './store.ts'
+import { getPending, listPending, rejectPending } from './store-operations.ts'
+
+type PendingInput = { action: 'list' | 'show' | 'reject'; id?: string }
 
 async function pendingAction(
   store: SkillStore,
@@ -14,12 +17,12 @@ async function pendingAction(
   const pendingId = requirePendingId(id)
 
   if (action === 'show') {
-    const pending = await store.getPending(pendingId)
+    const pending = await getPending(store, pendingId)
     return result(pending, JSON.stringify(pending, null, 2))
   }
 
   if (action === 'reject') {
-    await store.rejectPending(pendingId)
+    await rejectPending(store, pendingId)
     return result({ rejected: pendingId }, `Rejected ${pendingId}.`)
   }
 
@@ -27,12 +30,12 @@ async function pendingAction(
 }
 
 async function listPendingResult(store: SkillStore) {
-  const pending = await store.listPending()
+  const pending = await listPending(store)
   const compact = pending.map((item) => compactPending(item))
   return result({ pending: compact }, JSON.stringify(compact, null, 2))
 }
 
-function compactPending(item: Awaited<ReturnType<SkillStore['listPending']>>[number]) {
+function compactPending(item: Awaited<ReturnType<typeof listPending>>[number]) {
   const { proposal } = item
   if (proposal === undefined) {
     return { id: item.id, validation: item.validation }
@@ -71,7 +74,7 @@ export function addPendingTool(add: AddLearningTool, runtimeForSession: SessionR
         required: ['action'],
         additionalProperties: false
       },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute({ action, id }: PendingInput, toolCtx) {
         const { store } = await runtimeForSession(toolCtx.sessionID)
         return pendingAction(store, action, id)

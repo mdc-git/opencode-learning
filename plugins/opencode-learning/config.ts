@@ -27,16 +27,10 @@ const DEFAULTS: LearningConfig = Object.freeze({
     archiveAfterDays: 90
   }
 })
-function isMode(value: unknown): value is Mode {
+function configMode(value: unknown): Mode {
   return typeof value === 'string' && ['off', 'suggest', 'auto'].includes(value)
-}
-
-function configValues(options: unknown): Record<string, unknown> {
-  return isRecord(options) ? options : {}
-}
-
-function configMode(values: Record<string, unknown>): Mode {
-  return isMode(values.mode) ? values.mode : DEFAULTS.mode
+    ? (value as Mode)
+    : DEFAULTS.mode
 }
 
 function configCurator(values: Record<string, unknown>): LearningConfig['curator'] {
@@ -50,9 +44,9 @@ function isNotDisabled(value: unknown): boolean {
   return value !== false
 }
 
-export function loadConfig(options: unknown = {}): LearningConfig {
-  const values = configValues(options)
-  const mode = configMode(values)
+export function loadConfig(options: unknown): LearningConfig {
+  const values = isRecord(options) ? options : {}
+  const mode = configMode(values.mode)
   return {
     ...DEFAULTS,
     ...values,

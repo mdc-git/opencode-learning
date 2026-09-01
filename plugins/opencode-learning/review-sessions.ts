@@ -1,7 +1,7 @@
-import { createReviewSession, interruptSession, promptSession } from './events.ts'
 import { buildReviewPrompt, buildValidationPrompt } from './review-candidates.ts'
+import { SESSION_ID_KEY } from './shared.ts'
 import type { InternalMailbox } from './mailbox.ts'
-import type { OpenCodeContext, SessionInfo } from './sdk.ts'
+import type { OpenCodeContext, SessionCreateInput, SessionInfo } from './sdk.ts'
 import type {
   Candidate,
   ExperienceSnapshot,
@@ -18,7 +18,7 @@ type ReviewSessionContext = {
   config: LearningConfig
 }
 
-export type ReflectorOptions = {
+type ReflectorOptions = {
   directory: string
   model?: SessionInfo['model']
   exp: ExperienceSnapshot
@@ -27,13 +27,30 @@ export type ReflectorOptions = {
   onReflectorStart?: () => void
 }
 
-export type ValidatorOptions = {
+type ValidatorOptions = {
   directory: string
   model?: SessionInfo['model']
   exp: ExperienceSnapshot
   candidates: Candidate[]
   proposal: Proposal
   deterministic: Validation
+}
+
+async function createReviewSession(
+  ctx: OpenCodeContext,
+  {
+    directory,
+    agent,
+    title,
+    model
+  }: { directory: string; agent: string; title: string; model?: SessionInfo['model'] }
+): Promise<SessionInfo> {
+  const input: SessionCreateInput =
+    model === undefined
+      ? { title, agent, location: { directory } }
+      : { title, agent, location: { directory }, model }
+
+  return ctx.session.create(input)
 }
 
 export async function runReflector({
@@ -54,10 +71,6 @@ export async function runReflector({
     title: 'Procedural skill reflection'
   })
   const { id } = session
-  if (id.length === 0) {
-    throw new Error('OpenCode did not return a reflector session id')
-  }
-
   onReflectorStart?.()
   return runReviewSession({
     ctx,
@@ -88,10 +101,6 @@ export async function runValidator({
     title: 'Procedural skill validation'
   })
   const { id } = session
-  if (id.length === 0) {
-    throw new Error('OpenCode did not return a validator session id')
-  }
-
   return runReviewSession({
     ctx,
     mailbox,
@@ -131,7 +140,12 @@ async function runReviewSession<T>({
     isRegistered = true
     const callback = mailbox.wait<T>(id, timeout)
     void callback.catch(() => undefined)
-    await promptSession(ctx, id, prompt)
+    await ctx.session.prompt({
+      [SESSION_ID_KEY]: id,
+      text: prompt,
+      delivery: 'queue',
+      resume: true
+    })
     const result = await callback
     if (!mailbox.hasSubmitted(id)) {
       throw new Error(missingSubmission)
@@ -145,4 +159,27 @@ async function runReviewSession<T>({
 
     await interruptSession(ctx, id)
   }
+}
+
+export async function notifySession(
+  ctx: OpenCodeContext,
+  sessionID: string,
+  text: string
+): Promise<void> {
+  try {
+    await ctx.session.synthetic({
+      [SESSION_ID_KEY]: sessionID,
+      text,
+      description: 'opencode-learning',
+      metadata: { source: 'opencode-learning' },
+      delivery: 'queue',
+      resume: false
+    })
+  } catch {}
+}
+
+export async function interruptSession(ctx: OpenCodeContext, sessionID: string): Promise<void> {
+  try {
+    await ctx.session.interrupt({ [SESSION_ID_KEY]: sessionID })
+  } catch {}
 }

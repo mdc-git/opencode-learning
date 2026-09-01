@@ -1,11 +1,8 @@
 import type { Plugin } from '@opencode-ai/plugin'
-import type { SessionContext } from '@opencode-ai/plugin/promise/session'
 import type { Info as ToolInfo } from '@opencode-ai/plugin/promise/tool'
 
 export type OpenCodeContext = Parameters<Plugin.Plugin['setup']>[0]
 export type LearningToolInfo = Omit<ToolInfo, 'name' | 'options'>
-export type ContextEvent = Pick<SessionContext, 'sessionID' | 'messages'>
-
 type ToolHook = OpenCodeContext['tool']['hook']
 type ToolHookEvent = Parameters<Parameters<ToolHook>[1]>[0]
 

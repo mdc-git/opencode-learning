@@ -1,5 +1,4 @@
 import { isRecord } from './shared.ts'
-import type { UnknownRecord } from './types.ts'
 
 export type TriggerStats = {
   version: number
@@ -29,27 +28,11 @@ export type SkillTelemetry = {
   seenSessions: string[]
 }
 
-export type TelemetryState = UnknownRecord & {
+export type TelemetryState = {
   version: number
   skills: Record<string, SkillTelemetry>
   reviews: unknown[]
   triggerStats: TriggerStats
-}
-
-export function defaultTriggerStats(): TriggerStats {
-  return {
-    version: 1,
-    successfulTurns: 0,
-    eligible: 0,
-    deferred: 0,
-    suppressed: 0,
-    automaticReviews: 0,
-    accepted: 0,
-    noChange: 0,
-    errors: 0,
-    signals: { correction: 0, recovery: 0, workflow: 0 },
-    scores: { below12: 0, from12To15: 0, from16To23: 0, atLeast24: 0 }
-  }
 }
 
 function normalizeSkillTelemetry(value: unknown): SkillTelemetry | undefined {
@@ -96,20 +79,11 @@ function normalizeSkills(value: unknown): Record<string, SkillTelemetry> {
 }
 
 function normalizeCounter(value: unknown): number {
-  const number = counterValue(value)
-  if (!Number.isFinite(number) || number < 0) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     return 0
   }
 
-  return Math.min(Math.floor(number), Number.MAX_SAFE_INTEGER)
-}
-
-function counterValue(value: unknown): number {
-  if (typeof value === 'number') {
-    return value
-  }
-
-  return typeof value === 'string' && value.trim().length > 0 ? Number(value) : 0
+  return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER)
 }
 
 function normalizeTriggerStats(value: unknown): TriggerStats {
@@ -143,7 +117,6 @@ function normalizeTriggerStats(value: unknown): TriggerStats {
 export function normalizeTelemetryState(state: unknown): TelemetryState {
   const source = isRecord(state) ? state : {}
   return {
-    ...source,
     version: 3,
     skills: normalizeSkills(source.skills),
     reviews: Array.isArray(source.reviews) ? source.reviews : [],

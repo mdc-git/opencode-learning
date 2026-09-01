@@ -1,51 +1,35 @@
 import { deriveTriggerFeatures, scoreReviewCandidate, type TriggerDecision } from './scoring.ts'
-import { SESSION_ID_KEY } from './shared.ts'
 import type { InternalMailbox } from './mailbox.ts'
 import type { ExperienceSnapshot } from './types.ts'
 import type { Telemetry } from './telemetry.ts'
-import type { ReviewRequest, TriggerEvaluation } from './review-types.ts'
+
+type TriggerEvaluation = { decision: string; score: number; strongSignals: string[] }
 
 export function isReviewSessionUnavailable(
-  sessionID: string,
+  sessionId: string,
   isDisposed: boolean,
   mailbox: InternalMailbox
 ): boolean {
-  return sessionID.length === 0 || isDisposed || mailbox.isInternalSession(sessionID)
-}
-
-export function shouldReviewAfterExecution(isForced: boolean, isSucceeded: boolean): boolean {
-  return isForced || isSucceeded
-}
-
-export function queuePendingReview(
-  pendingReviews: Map<string, ReviewRequest>,
-  sessionID: string,
-  isForced: boolean,
-  terminalType: string
-): void {
-  const pending = pendingReviews.get(sessionID) ?? { force: false, terminalType }
-  pending.force ||= isForced
-  pending.terminalType = terminalType
-  pendingReviews.set(sessionID, pending)
+  return isDisposed || mailbox.isInternalSession(sessionId)
 }
 
 export function canStartReview({
-  sessionID,
+  sessionId,
   isDisposed,
   isEnabled,
   inFlight,
   mailbox
 }: {
-  sessionID: string
+  sessionId: string
   isDisposed: boolean
   isEnabled: boolean
   inFlight: Set<string>
   mailbox: InternalMailbox
 }): boolean {
   return (
-    !isReviewSessionUnavailable(sessionID, isDisposed, mailbox) &&
+    !isReviewSessionUnavailable(sessionId, isDisposed, mailbox) &&
     isEnabled &&
-    !inFlight.has(sessionID)
+    !inFlight.has(sessionId)
   )
 }
 
@@ -56,25 +40,25 @@ function recordTriggerEvaluationSafely(telemetry: Telemetry, evaluation: Trigger
 }
 
 function isDuplicateFingerprint({
-  sessionID,
+  sessionId,
   candidate,
   reviewedFingerprints,
   lastSuppressedFingerprint,
   telemetry
 }: {
-  sessionID: string
+  sessionId: string
   candidate: TriggerDecision
   reviewedFingerprints: Map<string, Map<string, string>>
   lastSuppressedFingerprint: Map<string, string>
   telemetry: Telemetry
 }): boolean {
-  const reviewed = reviewedFingerprints.get(sessionID)
+  const reviewed = reviewedFingerprints.get(sessionId)
   if (!reviewed?.has(candidate.fingerprint)) {
     return false
   }
 
-  if (lastSuppressedFingerprint.get(sessionID) !== candidate.fingerprint) {
-    lastSuppressedFingerprint.set(sessionID, candidate.fingerprint)
+  if (lastSuppressedFingerprint.get(sessionId) !== candidate.fingerprint) {
+    lastSuppressedFingerprint.set(sessionId, candidate.fingerprint)
     recordTriggerEvaluationSafely(telemetry, {
       decision: 'duplicate-fingerprint',
       score: candidate.score,
@@ -86,25 +70,25 @@ function isDuplicateFingerprint({
 }
 
 function isWorkflowOnCooldown(
-  sessionID: string,
+  sessionId: string,
   successfulTurns: Map<string, number>,
   lastAutomaticReviewTurn: Map<string, number>,
   cooldownTurns: number
 ): boolean {
   const turnsSinceReview =
-    (successfulTurns.get(sessionID) ?? 0) - (lastAutomaticReviewTurn.get(sessionID) ?? 0)
+    (successfulTurns.get(sessionId) ?? 0) - (lastAutomaticReviewTurn.get(sessionId) ?? 0)
   return turnsSinceReview < cooldownTurns
 }
 
 function shouldDeferWorkflowReview({
-  sessionID,
+  sessionId,
   candidate,
   successfulTurns,
   lastAutomaticReviewTurn,
   workflowCooldownTurns,
   telemetry
 }: {
-  sessionID: string
+  sessionId: string
   candidate: TriggerDecision
   successfulTurns: Map<string, number>
   lastAutomaticReviewTurn: Map<string, number>
@@ -114,7 +98,7 @@ function shouldDeferWorkflowReview({
   if (
     !candidate.workflowOnly ||
     !isWorkflowOnCooldown(
-      sessionID,
+      sessionId,
       successfulTurns,
       lastAutomaticReviewTurn,
       workflowCooldownTurns
@@ -145,7 +129,7 @@ function isIneligibleCandidate(candidate: TriggerDecision, telemetry: Telemetry)
 }
 
 type AutomaticReviewContext = {
-  sessionID: string
+  sessionId: string
   candidate: TriggerDecision
   successfulTurns: Map<string, number>
   lastAutomaticReviewTurn: Map<string, number>
@@ -157,7 +141,7 @@ type AutomaticReviewContext = {
 
 function completeAutomaticReview(context: AutomaticReviewContext): TriggerDecision | undefined {
   const {
-    sessionID: sessionId,
+    sessionId,
     candidate,
     successfulTurns,
     lastAutomaticReviewTurn,
@@ -168,7 +152,7 @@ function completeAutomaticReview(context: AutomaticReviewContext): TriggerDecisi
   } = context
   if (
     isDuplicateFingerprint({
-      [SESSION_ID_KEY]: sessionId,
+      sessionId,
       candidate,
       reviewedFingerprints,
       lastSuppressedFingerprint,
@@ -181,7 +165,7 @@ function completeAutomaticReview(context: AutomaticReviewContext): TriggerDecisi
   lastSuppressedFingerprint.delete(sessionId)
   if (
     shouldDeferWorkflowReview({
-      [SESSION_ID_KEY]: sessionId,
+      sessionId,
       candidate,
       successfulTurns,
       lastAutomaticReviewTurn,
@@ -201,7 +185,7 @@ function completeAutomaticReview(context: AutomaticReviewContext): TriggerDecisi
 }
 
 export function evaluateAutomaticReview({
-  sessionID,
+  sessionId,
   exp,
   scoreThreshold,
   workflowCooldownTurns,
@@ -211,7 +195,7 @@ export function evaluateAutomaticReview({
   lastSuppressedFingerprint,
   telemetry
 }: {
-  sessionID: string
+  sessionId: string
   exp: ExperienceSnapshot
   scoreThreshold: number
   workflowCooldownTurns: number
@@ -228,7 +212,7 @@ export function evaluateAutomaticReview({
   }
 
   return completeAutomaticReview({
-    [SESSION_ID_KEY]: sessionID,
+    sessionId,
     candidate,
     successfulTurns,
     lastAutomaticReviewTurn,

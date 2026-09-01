@@ -1,24 +1,29 @@
 import type { Options as ToolOptions, ToolContext } from '@opencode-ai/plugin/promise/tool'
 import type { InternalMailbox } from './mailbox.ts'
-import { proposalInputSchema, validationInputSchema } from './store.ts'
-import type { LearningToolInfo, OpenCodeContext } from './sdk.ts'
+import { proposalInputSchema, validationInputSchema } from './store-schemas.ts'
+import type { LearningToolInfo, OpenCodeContext, SessionInfo } from './sdk.ts'
+import { applyPending, listOwned, listPending } from './store-operations.ts'
+import { promote } from './store-promotion.ts'
 import type { LearningConfig, Proposal, ValidationSubmission } from './types.ts'
-import type {
-  AddLearningTool,
-  ForegroundSessionFor,
-  IdInput,
-  RegisterToolsOptions,
-  ReviewInput,
-  SessionRuntimeFor,
-  SkillIdInput
-} from './setup-types.ts'
+import type { SessionRuntimeFor } from './setup-runtime.ts'
 import { addPendingTool } from './setup-tool-pending.ts'
 import {
+  type AddLearningTool,
+  OBJECT_OUTPUT,
   componentStatus,
-  objectOutput,
-  recordAppliedTelemetry,
   result
 } from './setup-tool-helpers.ts'
+
+type ForegroundSessionFor = (sessionID: string) => Promise<SessionInfo | undefined>
+type RegisterToolsOptions = {
+  config: LearningConfig
+  mailbox: InternalMailbox
+  runtimeForSession: SessionRuntimeFor
+  foregroundSessionFor: ForegroundSessionFor
+}
+type ReviewInput = { force?: boolean }
+type IdInput = { id: string }
+type SkillIdInput = { skillId: string }
 
 function addCallbackTools(
   add: AddLearningTool,
@@ -31,7 +36,7 @@ function addCallbackTools(
       description:
         'Internal reflector-only tool. Submit exactly one structured procedural-skill proposal.',
       input: proposalInputSchema,
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute(proposal: Proposal, toolCtx: ToolContext) {
         enforceAgent(toolCtx, config.reflectorAgent, 'proposal')
         mailbox.submit(toolCtx.sessionID, 'proposal', proposal)
@@ -46,7 +51,7 @@ function addCallbackTools(
       description:
         'Internal validator-only tool. Submit exactly one structured procedural-skill validation.',
       input: validationInputSchema,
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute(validation: ValidationSubmission, toolCtx: ToolContext) {
         enforceAgent(toolCtx, config.validatorAgent, 'validation')
         mailbox.submit(toolCtx.sessionID, 'validation', validation)
@@ -59,7 +64,6 @@ function addCallbackTools(
 
 function addReviewTool(
   add: AddLearningTool,
-  config: LearningConfig,
   runtimeForSession: SessionRuntimeFor,
   foregroundSessionFor: ForegroundSessionFor
 ): void {
@@ -72,9 +76,9 @@ function addReviewTool(
         properties: { force: { type: 'boolean' } },
         additionalProperties: false
       },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute(input: ReviewInput, toolCtx: ToolContext) {
-        const isForce = input.force ?? false
+        const isForce = input.force === true
         const session = await foregroundSessionFor(toolCtx.sessionID)
         if (session === undefined) {
           return result(
@@ -85,21 +89,17 @@ function addReviewTool(
 
         const { pipeline } = await runtimeForSession(toolCtx.sessionID, session)
         const scheduled = pipeline.schedule(toolCtx.sessionID, { force: isForce })
-        return result(scheduled, reviewScheduleMessage(scheduled.scheduled === true, isForce))
+        const message =
+          scheduled.scheduled === true
+            ? isForce
+              ? 'Forced learning review scheduled after this turn.'
+              : 'Learning review scheduled after this turn.'
+            : 'Learning review was not scheduled.'
+        return result(scheduled, message)
       }
     },
     { namespace: 'learning', codemode: false }
   )
-}
-
-function reviewScheduleMessage(isScheduled: boolean, isForce: boolean): string {
-  if (!isScheduled) {
-    return 'Learning review was not scheduled.'
-  }
-
-  return isForce
-    ? 'Forced learning review scheduled after this turn.'
-    : 'Learning review scheduled after this turn.'
 }
 
 function addApplyTool(
@@ -118,14 +118,17 @@ function addApplyTool(
         required: ['id'],
         additionalProperties: false
       },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute({ id }: IdInput, toolCtx: ToolContext) {
         const { store, telemetry } = await runtimeForSession(toolCtx.sessionID)
-        const applied = await store.applyPending(id, {
-          confidenceThreshold: config.confidenceThreshold
-        })
-        const skillId = applied.proposal?.skillId
-        await recordAppliedTelemetry(telemetry, applied)
+        const applied = await applyPending(store, id, config.confidenceThreshold)
+        const skillId = applied.proposal.skillId!
+        if (applied.proposal.decision === 'create') {
+          await telemetry.recordCreated(skillId)
+        } else if (applied.proposal.decision === 'patch') {
+          await telemetry.recordPatched(skillId)
+        }
+
         await ctx.skill.reload()
         return result(
           { applied: id, skillId, result: applied.result, reloaded: true },
@@ -153,10 +156,10 @@ function addPromoteTool(
         required: ['skillId'],
         additionalProperties: false
       },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute({ skillId }: SkillIdInput, toolCtx: ToolContext) {
         const { store } = await runtimeForSession(toolCtx.sessionID)
-        const promoted = await store.promote(skillId)
+        const promoted = await promote(store, skillId)
         await ctx.skill.reload()
         return result(
           { ...promoted, reloaded: true },
@@ -180,12 +183,12 @@ function addStatusTool(
       description:
         'Show procedural-learning configuration, native component availability, owned skills, pending proposals, and recent reviews.',
       input: { type: 'object', properties: {}, additionalProperties: false },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute(_: unknown, toolCtx: ToolContext) {
         const { directory, store, telemetry } = await runtimeForSession(toolCtx.sessionID)
         const [projectSkills, pending, components] = await Promise.all([
-          store.listOwned('project'),
-          store.listPending(),
+          listOwned(store, 'project'),
+          listPending(store),
           componentStatus(ctx, config)
         ])
         const output = {
@@ -233,7 +236,7 @@ function addCurateTool(
         properties: { force: { type: 'boolean' } },
         additionalProperties: false
       },
-      output: objectOutput(),
+      output: OBJECT_OUTPUT,
       async execute({ force = false }: ReviewInput, toolCtx: ToolContext) {
         const { curator } = await runtimeForSession(toolCtx.sessionID)
         const output = await curator.maybeRun({ force })
@@ -258,7 +261,7 @@ export async function registerTools(
     }
 
     addCallbackTools(add, config, mailbox)
-    addReviewTool(add, config, runtimeForSession, foregroundSessionFor)
+    addReviewTool(add, runtimeForSession, foregroundSessionFor)
     addPendingTool(add, runtimeForSession)
     addApplyTool(add, ctx, config, runtimeForSession)
     addPromoteTool(add, ctx, runtimeForSession)
@@ -268,11 +271,11 @@ export async function registerTools(
 }
 
 function enforceAgent(toolCtx: ToolContext, expected: string, kind: string): void {
-  if (toolCtx?.agent !== expected) {
+  if (toolCtx.agent !== expected) {
     throw new Error(`learning.submit_${kind} is restricted to ${expected}`)
   }
 }
 
-export function isLearningTool(name: unknown): boolean {
-  return typeof name === 'string' && (name.startsWith('learning.') || name.startsWith('learning_'))
+export function isLearningTool(name: string): boolean {
+  return name.startsWith('learning.') || name.startsWith('learning_')
 }

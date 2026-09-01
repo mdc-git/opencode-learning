@@ -1,27 +1,16 @@
 import {
   classifyToolCall,
-  inputFingerprintFor,
-  operationFingerprint,
-  operationDescriptor
+  inputFingerprint,
+  operationDescriptor,
+  operationFingerprint
 } from './scoring-calls.ts'
-import {
-  correctionSignals,
-  isFailure,
-  numericValue,
-  turnKey,
-  turnValue
-} from './scoring-corrections.ts'
-import { isRecord } from './scoring-input.ts'
 import { safeSignalHash, stableHash } from './scoring-hash.ts'
-import { addRecoverySignals, recoveryPairs } from './scoring-recovery.ts'
-import { isSuccessfulTurn, turnStates } from './scoring-turns.ts'
+import { recoveryPairs } from './scoring-recovery.ts'
 import type {
   CorrectionSignal,
   EnrichedCall,
   Experience,
   FeatureSignal,
-  ToolRecord,
-  TurnRecord,
   TriggerFeatures,
   WorkflowRecord
 } from './scoring-types.ts'
@@ -30,47 +19,20 @@ const ACTION_KINDS = new Set(['mutate', 'execute'])
 const WORKFLOW_KINDS = new Set(['mutate', 'execute', 'verify'])
 
 function enrichedCalls(experience: Experience): EnrichedCall[] {
-  const records = Array.isArray(experience?.toolCalls) ? experience.toolCalls : []
-  return records.map((record, index) => {
-    const source = isRecord(record) ? record : {}
-    const descriptor = operationDescriptor(source)
+  return (experience.toolCalls ?? []).map((record, index) => {
+    const descriptor = operationDescriptor(record)
     return {
-      record: source,
+      record,
       index,
-      turn: turnValue(source),
-      kind: classifyToolCall(source),
-      isSuccess: source.status === 'success',
-      isFailure: isFailure(source),
+      turn: record.turn,
+      kind: classifyToolCall(record),
+      isSuccess: record.status === 'success',
+      isFailure: record.status === 'error',
       descriptor,
-      operationFingerprint: operationFingerprint(source),
-      inputFingerprint: inputFingerprintFor(record)
+      operationFingerprint: operationFingerprint(record),
+      inputFingerprint: inputFingerprint(record)
     }
   })
-}
-
-function doesFollowTurn(call: EnrichedCall, signal: CorrectionSignal): boolean {
-  if (call.turn === undefined || signal.turn === undefined) {
-    return false
-  }
-
-  if (call.turn !== signal.turn) {
-    return call.turn > signal.turn
-  }
-
-  return doesFollowWithinTurn(call, signal)
-}
-
-function doesFollowWithinTurn(call: EnrichedCall, signal: CorrectionSignal): boolean {
-  if (signal.index !== undefined) {
-    return call.index > signal.index
-  }
-
-  const callAt = numericValue(call.record.at)
-  if (callAt !== undefined && signal.at !== undefined) {
-    return callAt >= signal.at
-  }
-
-  return true
 }
 
 function addSignal(
@@ -89,57 +51,15 @@ function addSignal(
   signals.push({ kind, fingerprint })
 }
 
-function workflowRecords(
-  calls: EnrichedCall[],
-  state: { states: Map<string, boolean> }
-): { records: WorkflowRecord[]; successfulVerifications: number } {
-  const grouped = groupedCalls(calls)
-
-  const records: WorkflowRecord[] = []
-  let successfulVerifications = 0
-  for (const [key, group] of grouped) {
-    const workflow = workflowForGroup(key, group, state)
-    successfulVerifications += workflow.verifications
-    appendWorkflowRecord(records, workflow.record)
-  }
-
-  return { records, successfulVerifications }
-}
-
-function groupedCalls(calls: EnrichedCall[]): Map<string | undefined, EnrichedCall[]> {
-  const grouped = new Map<string | undefined, EnrichedCall[]>()
+function groupedCalls(calls: EnrichedCall[]): Map<number, EnrichedCall[]> {
+  const grouped = new Map<number, EnrichedCall[]>()
   for (const call of calls) {
-    const key = turnKey(call.turn)
-    const group = grouped.get(key) ?? []
+    const group = grouped.get(call.turn) ?? []
     group.push(call)
-    grouped.set(key, group)
+    grouped.set(call.turn, group)
   }
 
   return grouped
-}
-
-function appendWorkflowRecord(records: WorkflowRecord[], record: WorkflowRecord | undefined): void {
-  if (record !== undefined) {
-    records.push(record)
-  }
-}
-
-function workflowForGroup(
-  key: string | undefined,
-  group: EnrichedCall[],
-  state: { states: Map<string, boolean> }
-): { record?: WorkflowRecord; verifications: number } {
-  if (!isSuccessfulTurn(key, state)) {
-    return { verifications: 0 }
-  }
-
-  const mutationIndex = group.findIndex((call) => call.isSuccess && call.kind === 'mutate')
-  const verifierIndexes = verificationIndexes(group, mutationIndex)
-  if (!hasWorkflowVerification(mutationIndex, verifierIndexes)) {
-    return { verifications: 0 }
-  }
-
-  return workflowResult(key, group, mutationIndex, verifierIndexes)
 }
 
 function verificationIndexes(group: EnrichedCall[], mutationIndex: number): number[] {
@@ -150,75 +70,63 @@ function verificationIndexes(group: EnrichedCall[], mutationIndex: number): numb
     .filter((index) => index !== -1)
 }
 
-function hasWorkflowVerification(mutationIndex: number, verifierIndexes: number[]): boolean {
-  return mutationIndex !== -1 && verifierIndexes.length > 0
-}
-
-function workflowResult(
-  key: string | undefined,
+function workflowForGroup(
+  turn: number,
   group: EnrichedCall[],
-  mutationIndex: number,
-  verifierIndexes: number[]
+  states: Map<number, boolean>
 ): { record?: WorkflowRecord; verifications: number } {
-  const end = verifierIndexes.at(-1)
-  if (end === undefined) {
-    return { verifications: verifierIndexes.length }
+  if (states.get(turn) !== true) {
+    return { verifications: 0 }
   }
 
+  const mutationIndex = group.findIndex((call) => call.isSuccess && call.kind === 'mutate')
+  const verifierIndexes = verificationIndexes(group, mutationIndex)
+  if (mutationIndex === -1 || verifierIndexes.length === 0) {
+    return { verifications: 0 }
+  }
+
+  const end = verifierIndexes.at(-1)!
   const sequence = group
     .slice(mutationIndex, end + 1)
     .filter((call) => call.isSuccess && WORKFLOW_KINDS.has(call.kind))
     .map((call) => ({ category: call.kind, operation: call.operationFingerprint }))
   return {
-    record: { turn: key, fingerprint: stableHash(sequence) },
+    record: { turn, fingerprint: stableHash(sequence) },
     verifications: verifierIndexes.length
   }
+}
+
+function workflowRecords(
+  calls: EnrichedCall[],
+  states: Map<number, boolean>
+): { records: WorkflowRecord[]; successfulVerifications: number } {
+  const records: WorkflowRecord[] = []
+  let successfulVerifications = 0
+  for (const [turn, group] of groupedCalls(calls)) {
+    const workflow = workflowForGroup(turn, group, states)
+    successfulVerifications += workflow.verifications
+    if (workflow.record !== undefined) {
+      records.push(workflow.record)
+    }
+  }
+
+  return { records, successfulVerifications }
 }
 
 function distinctCategoryCount(calls: EnrichedCall[]): number {
   const categories = new Set<string>()
   for (const call of calls) {
-    if (!WORKFLOW_KINDS.has(call.kind)) {
-      continue
+    if (WORKFLOW_KINDS.has(call.kind)) {
+      categories.add(`${call.kind}:${call.descriptor.tool}:${call.descriptor.operation}`)
     }
-
-    categories.add(`${call.kind}:${call.descriptor.tool}:${call.descriptor.operation}`)
   }
 
   return categories.size
 }
 
-export function deriveTriggerFeatures(experience: Experience): TriggerFeatures {
-  const calls = enrichedCalls(experience)
-  const state = turnStates(experience)
-  const signalState = { signals: [] as FeatureSignal[], seen: new Set<string>() }
-  const incorporatedCorrections = addCorrectionSignals(
-    calls,
-    state,
-    correctionSignals(experience),
-    signalState
-  )
-  const recovery = recoveryPairs(calls)
-  addRecoverySignals(recovery.pairs, signalState, addSignal)
-  const workflows = workflowRecords(calls, state)
-  const repeatedWorkflows = addWorkflowSignals(workflows.records, signalState)
-
-  return {
-    incorporatedCorrections,
-    confirmedRecoveries: recovery.pairs.length,
-    repeatedVerifiedWorkflows: repeatedWorkflows,
-    successfulVerificationsAfterMutation: workflows.successfulVerifications,
-    unresolvedFailures: calls.filter(
-      (call) => call.isFailure && !recovery.pairedFailures.has(call.index)
-    ).length,
-    distinctCategories: distinctCategoryCount(calls),
-    signalFingerprints: signalState.signals
-  }
-}
-
 function addCorrectionSignals(
   calls: EnrichedCall[],
-  state: { states: Map<string, boolean> },
+  states: Map<number, boolean>,
   corrections: CorrectionSignal[],
   signalState: { signals: FeatureSignal[]; seen: Set<string> }
 ): number {
@@ -226,10 +134,10 @@ function addCorrectionSignals(
   for (const signal of corrections) {
     const isIncorporated = calls.some(
       (call) =>
+        call.turn >= signal.turn &&
         call.isSuccess &&
         ACTION_KINDS.has(call.kind) &&
-        isSuccessfulTurn(turnKey(call.turn), state) &&
-        doesFollowTurn(call, signal)
+        states.get(call.turn) === true
     )
     if (!isIncorporated) {
       continue
@@ -242,14 +150,41 @@ function addCorrectionSignals(
   return count
 }
 
+function addRecoverySignals(
+  pairs: Array<{ failure: EnrichedCall; success: EnrichedCall }>,
+  signalState: { signals: FeatureSignal[]; seen: Set<string> }
+): void {
+  for (const pair of pairs) {
+    addSignal(
+      signalState.signals,
+      signalState.seen,
+      'recovery',
+      stableHash({
+        operation: pair.failure.operationFingerprint,
+        failedInput: pair.failure.inputFingerprint,
+        successfulInput: pair.success.inputFingerprint
+      })
+    )
+  }
+}
+
+function workflowTurnGroups(records: WorkflowRecord[]): Map<string, Set<number>> {
+  const groups = new Map<string, Set<number>>()
+  for (const workflow of records) {
+    const turns = groups.get(workflow.fingerprint) ?? new Set<number>()
+    turns.add(workflow.turn)
+    groups.set(workflow.fingerprint, turns)
+  }
+
+  return groups
+}
+
 function addWorkflowSignals(
   records: WorkflowRecord[],
   signalState: { signals: FeatureSignal[]; seen: Set<string> }
 ): number {
-  const workflowTurns = workflowTurnGroups(records)
-
   let repeated = 0
-  for (const [fingerprint, turns] of workflowTurns) {
+  for (const [fingerprint, turns] of workflowTurnGroups(records)) {
     if (turns.size < 2) {
       continue
     }
@@ -261,13 +196,32 @@ function addWorkflowSignals(
   return repeated
 }
 
-function workflowTurnGroups(records: WorkflowRecord[]): Map<string, Set<string | undefined>> {
-  const workflowTurns = new Map<string, Set<string | undefined>>()
-  for (const workflow of records) {
-    const turns = workflowTurns.get(workflow.fingerprint) ?? new Set<string | undefined>()
-    turns.add(workflow.turn)
-    workflowTurns.set(workflow.fingerprint, turns)
-  }
+export function deriveTriggerFeatures(experience: Experience): TriggerFeatures {
+  const calls = enrichedCalls(experience)
+  const states = new Map<number, boolean>(
+    (experience.turns ?? []).map((turn) => [turn.turn, turn.succeeded])
+  )
+  const signalState = { signals: [] as FeatureSignal[], seen: new Set<string>() }
+  const corrections = addCorrectionSignals(
+    calls,
+    states,
+    experience.correctionSignals ?? [],
+    signalState
+  )
+  const recovery = recoveryPairs(calls)
+  addRecoverySignals(recovery.pairs, signalState)
+  const workflows = workflowRecords(calls, states)
+  const repeatedWorkflows = addWorkflowSignals(workflows.records, signalState)
 
-  return workflowTurns
+  return {
+    incorporatedCorrections: corrections,
+    confirmedRecoveries: recovery.pairs.length,
+    repeatedVerifiedWorkflows: repeatedWorkflows,
+    successfulVerificationsAfterMutation: workflows.successfulVerifications,
+    unresolvedFailures: calls.filter(
+      (call) => call.isFailure && !recovery.pairedFailures.has(call.index)
+    ).length,
+    distinctCategories: distinctCategoryCount(calls),
+    signalFingerprints: signalState.signals
+  }
 }

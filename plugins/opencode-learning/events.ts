@@ -1,12 +1,5 @@
-import { redactError, SESSION_ID_KEY } from './shared.ts'
-import type {
-  OpenCodeContext,
-  OpenCodeEvent,
-  SessionCreateInput,
-  SessionInfo,
-  SessionMovedEvent,
-  TerminalEvent
-} from './sdk.ts'
+import { redactError } from './shared.ts'
+import type { OpenCodeContext, OpenCodeEvent, SessionMovedEvent, TerminalEvent } from './sdk.ts'
 
 const TERMINAL_EVENT_TYPES = new Set([
   'session.execution.succeeded',
@@ -203,52 +196,4 @@ async function delay(ms: number, signal: AbortSignal): Promise<void> {
       { once: true }
     )
   })
-}
-
-export async function createReviewSession(
-  ctx: OpenCodeContext,
-  {
-    directory,
-    agent,
-    title,
-    model
-  }: { directory: string; agent: string; title: string; model?: SessionInfo['model'] }
-): Promise<SessionInfo> {
-  const input: SessionCreateInput =
-    model === undefined || model.id.length === 0 || model.providerID.length === 0
-      ? { title, agent, location: { directory } }
-      : { title, agent, location: { directory }, model }
-
-  return ctx.session.create(input)
-}
-
-export async function promptSession(
-  ctx: OpenCodeContext,
-  sessionID: string,
-  text: string
-): Promise<unknown> {
-  return ctx.session.prompt({ [SESSION_ID_KEY]: sessionID, text, delivery: 'queue', resume: true })
-}
-
-export async function interruptSession(ctx: OpenCodeContext, sessionID: string): Promise<void> {
-  try {
-    await ctx.session.interrupt({ [SESSION_ID_KEY]: sessionID })
-  } catch {}
-}
-
-export async function notifySession(
-  ctx: OpenCodeContext,
-  sessionID: string,
-  text: string
-): Promise<void> {
-  try {
-    await ctx.session.synthetic({
-      [SESSION_ID_KEY]: sessionID,
-      text,
-      description: 'opencode-learning',
-      metadata: { source: 'opencode-learning' },
-      delivery: 'queue',
-      resume: false
-    })
-  } catch {}
 }

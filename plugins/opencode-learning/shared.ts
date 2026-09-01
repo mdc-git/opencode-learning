@@ -122,12 +122,12 @@ export async function writeJson(file: string, value: unknown): Promise<void> {
   await atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`)
 }
 
-export function trimText(value: unknown, max = 4e3): string {
-  return trimTextAt(value, max)
-}
+export function trimText(value: unknown, max: number): string {
+  if (value === null) {
+    return ''
+  }
 
-function trimTextAt(value: unknown, max: number): string {
-  if (value === null || value === undefined) {
+  if (value === undefined) {
     return ''
   }
 
@@ -157,10 +157,6 @@ export function redactError(error: unknown): string {
   }
 
   return trimText(error instanceof Error ? error.message : error, 800)
-}
-
-export function hasCallId(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
 }
 
 function primitiveText(value: unknown): string {

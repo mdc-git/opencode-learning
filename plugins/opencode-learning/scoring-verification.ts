@@ -8,13 +8,8 @@ import {
   PYTHON_OPTION_VALUES
 } from './scoring-command-config.ts'
 import { commandSegments, CONTROL_FLOW_TOKENS, shellTokens } from './scoring-shell.ts'
-import {
-  firstCommandWord,
-  normalizedExecutable,
-  optionSpecFor,
-  positionalCommandWords,
-  unwrapCommand
-} from './scoring-command-options.ts'
+import { normalizedExecutable, optionSpecFor, unwrapCommand } from './scoring-command-options.ts'
+import { firstCommandWord, positionalCommandWords } from './scoring-command-positionals.ts'
 
 type VerificationHandler = (args: string[]) => string
 
@@ -41,6 +36,7 @@ function packageVerification(args: string[], executable: string): string {
 
 type PythonStep =
   { kind: 'return'; value: string } | { kind: 'continue'; nextIndex: number } | { kind: 'invalid' }
+type PythonStepResult = { done: true; value: string } | { done: false; nextIndex: number }
 
 function isPythonVerificationOption(argument: string): boolean {
   if (!argument.startsWith('-')) {
@@ -83,20 +79,27 @@ function pythonOptionNextIndex(argument: string, index: number): number {
 }
 
 function pythonVerification(args: string[]): string {
-  return pythonVerificationAt(args, 0)
+  let index = 0
+  while (index < args.length) {
+    const result = pythonStepResult(pythonVerificationStep(args, index))
+    if (result.done) {
+      return result.value
+    }
+
+    index = result.nextIndex
+  }
+
+  return ''
 }
 
-function pythonVerificationAt(args: string[], index: number): string {
-  if (index >= args.length) {
-    return ''
-  }
-
-  const step = pythonVerificationStep(args, index)
+function pythonStepResult(step: PythonStep): PythonStepResult {
   if (step.kind === 'return') {
-    return step.value
+    return { done: true, value: step.value }
   }
 
-  return step.kind === 'invalid' ? '' : pythonVerificationAt(args, step.nextIndex)
+  return step.kind === 'invalid'
+    ? { done: true, value: '' }
+    : { done: false, nextIndex: step.nextIndex }
 }
 
 function firstVerification(
@@ -140,7 +143,7 @@ const VERIFICATION_HANDLERS = new Map<string, VerificationHandler>([
   ['yarn', (args) => packageVerification(args, 'yarn')],
   ['bun', (args) => packageVerification(args, 'bun')],
   ['pytest', () => 'pytest'],
-  ['python', pythonVerification],
+  ['python', (args) => pythonVerification(args)],
   ['go', (args) => firstVerification(args, 'go', new Set(['test']), 'go')],
   [
     'cargo',
@@ -224,14 +227,10 @@ function firstCommandOperation(command: string): SegmentOperation {
       return { operation: result.operation }
     }
 
-    skippedExecutable = firstDefined(skippedExecutable, result.skipped)
+    skippedExecutable ??= result.skipped
   }
 
   return { skipped: skippedExecutable }
-}
-
-function firstDefined(first: string | undefined, second: string | undefined): string | undefined {
-  return first ?? second
 }
 
 export function isExecutionTool(tool: string): boolean {

@@ -1,22 +1,22 @@
+import type { Options as ToolOptions } from '@opencode-ai/plugin/promise/tool'
 import { isRecord } from './shared.ts'
-import type { Telemetry } from './telemetry.ts'
-import type { OpenCodeContext } from './sdk.ts'
+import type { LearningToolInfo, OpenCodeContext } from './sdk.ts'
 import type { LearningConfig, UnknownRecord } from './types.ts'
-import type { AppliedPendingResult, ComponentStatus } from './setup-types.ts'
 
-export function objectOutput(): { type: 'object'; additionalProperties: boolean } {
-  return { type: 'object', additionalProperties: true }
+export type AddLearningTool = (name: string, info: LearningToolInfo, options: ToolOptions) => void
+
+export const OBJECT_OUTPUT: { type: 'object'; additionalProperties: boolean } = {
+  type: 'object',
+  additionalProperties: true
 }
 
 export function result(output: unknown, content: string): { output: unknown; content: string } {
   return { output: sanitize(output), content }
 }
 
-export async function componentStatus(
-  ctx: OpenCodeContext,
-  config: LearningConfig
-): Promise<ComponentStatus> {
-  const out: ComponentStatus = { reflectorAgent: false, validatorAgent: false, commands: {} }
+export async function componentStatus(ctx: OpenCodeContext, config: LearningConfig) {
+  const commands: Record<string, boolean> = {}
+  const out = { reflectorAgent: false, validatorAgent: false, commands }
   try {
     const agentResponse = await ctx.agent.list()
     const ids = new Set(agentResponse.data.map((item) => item.id))
@@ -42,39 +42,6 @@ export async function componentStatus(
   } catch {}
 
   return out
-}
-
-export async function recordAppliedTelemetry(
-  telemetry: Telemetry,
-  applied: AppliedPendingResult
-): Promise<void> {
-  const skillId = appliedSkillId(applied)
-  if (skillId === undefined || !hasAppliedFile(applied)) {
-    return
-  }
-
-  await recordAppliedOperation(telemetry, applied.proposal.decision, skillId)
-}
-
-function appliedSkillId(applied: AppliedPendingResult): string | undefined {
-  const skillId = applied.proposal?.skillId
-  return typeof skillId === 'string' ? skillId : undefined
-}
-
-function hasAppliedFile(applied: AppliedPendingResult): boolean {
-  return isRecord(applied.result) && applied.result.file !== undefined
-}
-
-async function recordAppliedOperation(
-  telemetry: Telemetry,
-  decision: string | undefined,
-  skillId: string
-): Promise<void> {
-  if (decision === 'create') {
-    await telemetry.recordCreated(skillId)
-  } else if (decision === 'patch') {
-    await telemetry.recordPatched(skillId)
-  }
 }
 
 function sanitize(value: unknown): unknown {

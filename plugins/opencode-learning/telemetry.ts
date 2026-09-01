@@ -2,40 +2,17 @@ import path from 'node:path'
 import { isRecord, readJson, writeJson } from './shared.ts'
 import type { ExperienceSnapshot, UnknownRecord } from './types.ts'
 import {
-  defaultTriggerStats,
   normalizeTelemetryState,
   type SkillTelemetry,
   type TelemetryState,
   type TriggerStats
 } from './telemetry-state.ts'
-import {
-  recordScoreBucket,
-  recordTriggerDecision,
-  recordTriggerSignals
-} from './telemetry-triggers.ts'
 
-function hasExperienceFailures(exp: ExperienceSnapshot): boolean {
-  return exp.toolCalls?.some((x) => x.status === 'error') ?? false
-}
-
-function triggerStatsFor(state: TelemetryState): TriggerStats {
-  state.triggerStats ??= defaultTriggerStats()
-  return state.triggerStats
-}
-
-const TRIGGER_OUTCOME_UPDATES: Record<string, (stats: TriggerStats) => void> = {
-  staged(stats) {
-    stats.accepted += 1
-  },
-  applied(stats) {
-    stats.accepted += 1
-  },
-  'no-change'(stats) {
-    stats.noChange += 1
-  },
-  error(stats) {
-    stats.errors += 1
-  }
+const TRIGGER_OUTCOMES: Record<string, 'accepted' | 'noChange' | 'errors'> = {
+  staged: 'accepted',
+  applied: 'accepted',
+  'no-change': 'noChange',
+  error: 'errors'
 }
 
 function recordSkillExperience(
@@ -50,34 +27,17 @@ function recordSkillExperience(
   skill.seenSessions.push(exp.sessionID)
   skill.seenSessions = skill.seenSessions.slice(-100)
   skill.observedSessions += 1
-  recordSkillOutcome(skill, exp, isFailures)
+  for (const [isPresent, key] of [
+    [isFailures, 'sessionsWithErrors'],
+    [exp.recoveries > 0, 'sessionsWithRecovery'],
+    [exp.corrections.length > 0, 'sessionsWithCorrections']
+  ] as const) {
+    if (isPresent) {
+      skill[key] += 1
+    }
+  }
+
   skill.updatedAt = Date.now()
-}
-
-function recordSkillOutcome(
-  skill: SkillTelemetry,
-  exp: ExperienceSnapshot,
-  isFailures: boolean
-): void {
-  if (isFailures) {
-    skill.sessionsWithErrors += 1
-  }
-
-  if (hasRecoveries(exp)) {
-    skill.sessionsWithRecovery += 1
-  }
-
-  if (hasCorrections(exp)) {
-    skill.sessionsWithCorrections += 1
-  }
-}
-
-function hasRecoveries(exp: ExperienceSnapshot): boolean {
-  return (exp.recoveries ?? 0) > 0
-}
-
-function hasCorrections(exp: ExperienceSnapshot): boolean {
-  return (exp.corrections?.length ?? 0) > 0
 }
 
 function scoreField(score: unknown, key: string): unknown {
@@ -107,6 +67,14 @@ function reviewTelemetryItem(item: UnknownRecord): UnknownRecord {
   }
 }
 
+function shouldRewriteTelemetry(
+  raw: unknown,
+  state: TelemetryState,
+  shouldWrite: boolean
+): boolean {
+  return shouldWrite || (raw !== undefined && JSON.stringify(raw) !== JSON.stringify(state))
+}
+
 export class Telemetry {
   private queue: Promise<void>
   readonly file: string
@@ -119,9 +87,18 @@ export class Telemetry {
   }
 
   async load(): Promise<this> {
-    const raw = await readJson<unknown>(this.file, undefined)
+    let raw: unknown
+    let shouldWrite = false
+    try {
+      raw = await readJson<unknown>(this.file, undefined)
+    } catch (error: unknown) {
+      console.error('[opencode-learning] telemetry file unreadable; resetting state', error)
+      raw = undefined
+      shouldWrite = true
+    }
+
     this.state = normalizeTelemetryState(raw)
-    if (raw !== undefined && JSON.stringify(raw) !== JSON.stringify(this.state)) {
+    if (shouldRewriteTelemetry(raw, this.state, shouldWrite)) {
       await writeJson(this.file, this.state)
     }
 
@@ -159,8 +136,8 @@ export class Telemetry {
   }
 
   async recordExperience(exp: ExperienceSnapshot): Promise<void> {
-    const isFailures = hasExperienceFailures(exp)
-    for (const id of exp.skillsUsed ?? []) {
+    const isFailures = exp.toolCalls.some((item) => item.status === 'error')
+    for (const id of exp.skillsUsed) {
       const s = this.skill(id)
       recordSkillExperience(s, exp, isFailures)
     }
@@ -197,11 +174,11 @@ export class Telemetry {
     score,
     strongSignals
   }: {
-    decision?: string
-    score?: number
-    strongSignals?: string[]
-  } = {}): Promise<void> {
-    const stats = triggerStatsFor(this.state)
+    decision: string
+    score: number
+    strongSignals: string[]
+  }): Promise<void> {
+    const stats = this.state.triggerStats
     recordTriggerDecision(stats, decision)
     recordScoreBucket(stats, score)
     recordTriggerSignals(stats, strongSignals)
@@ -209,11 +186,8 @@ export class Telemetry {
     return this.flush()
   }
 
-  async recordTriggerOutcome(decision: string): Promise<void> {
-    const update = TRIGGER_OUTCOME_UPDATES[decision]
-    if (update !== undefined) {
-      update(triggerStatsFor(this.state))
-    }
+  async recordTriggerOutcome(decision: TriggerOutcome): Promise<void> {
+    this.state.triggerStats[TRIGGER_OUTCOMES[decision]] += 1
 
     return this.flush()
   }
@@ -235,3 +209,54 @@ export class Telemetry {
     return this.queue
   }
 }
+
+type TriggerOutcome = 'staged' | 'applied' | 'no-change' | 'error'
+
+function recordTriggerDecision(stats: TriggerStats, decision: string): void {
+  const update = TRIGGER_DECISION_UPDATES[decision]
+  update?.(stats)
+}
+
+const TRIGGER_DECISION_UPDATES: Record<string, (stats: TriggerStats) => void> = {
+  review(stats) {
+    stats.eligible += 1
+  },
+  'workflow-cooldown'(stats) {
+    stats.deferred += 1
+  },
+  'duplicate-fingerprint'(stats) {
+    stats.suppressed += 1
+  }
+}
+
+function recordScoreBucket(stats: TriggerStats, score: number): void {
+  if (!Number.isFinite(score)) {
+    return
+  }
+
+  const bucket = SCORE_BUCKETS.find((item) => score <= item.max)
+  if (bucket !== undefined) {
+    stats.scores[bucket.key] += 1
+  }
+}
+
+const SCORE_BUCKETS: Array<{ max: number; key: keyof TriggerStats['scores'] }> = [
+  { max: 11, key: 'below12' },
+  { max: 15, key: 'from12To15' },
+  { max: 23, key: 'from16To23' },
+  { max: Infinity, key: 'atLeast24' }
+]
+
+function recordTriggerSignals(stats: TriggerStats, strongSignals: string[]): void {
+  for (const signal of strongSignals) {
+    if (TRIGGER_SIGNAL_KEYS.has(signal as keyof TriggerStats['signals'])) {
+      stats.signals[signal as keyof TriggerStats['signals']] += 1
+    }
+  }
+}
+
+const TRIGGER_SIGNAL_KEYS = new Set<keyof TriggerStats['signals']>([
+  'correction',
+  'recovery',
+  'workflow'
+])

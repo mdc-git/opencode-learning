@@ -1,17 +1,57 @@
 import {
-  commandText,
-  extractCommand,
-  inputField,
   isExecutionTool,
   isRecognizedVerification,
-  normalizedCommandOperation,
-  normalizeTool,
-  parseInput,
-  shellTokens
-} from './scoring-commands.ts'
-import { isRecord } from './scoring-input.ts'
+  normalizedCommandOperation
+} from './scoring-verification.ts'
+import { shellTokens } from './scoring-shell.ts'
 import { normalizeForComparison, normalizedTarget, stableHash } from './scoring-hash.ts'
 import type { OperationDescriptor, ToolKind, ToolRecord, UnknownRecord } from './scoring-types.ts'
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function parseInput(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value
+  }
+
+  const text = value.trim()
+  if (text.length === 0) {
+    return value
+  }
+
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return value
+  }
+}
+
+function inputField(record: ToolRecord, name: string): unknown {
+  const input = parseInput(record.input)
+  return isRecord(input) ? input[name] : undefined
+}
+
+function commandText(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  return isRecord(value) && typeof value.command === 'string' ? value.command : ''
+}
+
+function extractCommand(record: ToolRecord): string {
+  return commandText(parseInput(record.input))
+}
+
+function normalizeTool(record: ToolRecord): string {
+  const parts = record.tool
+    .trim()
+    .toLowerCase()
+    .split(/[.\/\\]/v)
+  return parts.at(-1) ?? ''
+}
 
 const INSPECTION_TOOLS = new Set(['read', 'grep', 'glob', 'webfetch', 'websearch', 'skill'])
 const MUTATION_TOOLS = new Set(['patch', 'edit', 'write'])
@@ -54,14 +94,6 @@ export function operationDescriptor(record: ToolRecord): OperationDescriptor {
   return { tool, operation: operationFromRecord(record, tool, command), target }
 }
 
-function inputSource(record: ToolRecord): unknown {
-  if (!isRecord(record)) {
-    return undefined
-  }
-
-  return firstDefinedInput(record, ['input', 'command', 'cmd', 'params', 'arguments'])
-}
-
 function executionCommand(record: ToolRecord): string {
   return isExecutionTool(normalizeTool(record)) ? extractCommand(record) : ''
 }
@@ -75,12 +107,12 @@ function normalizeFingerprintInput(record: ToolRecord, input: unknown): unknown 
   return normalizeShellInput(input, 0, typeof input === 'string' || Array.isArray(input))
 }
 
-function inputFingerprint(record: ToolRecord): string {
-  const input = parseInput(inputSource(record))
+export function inputFingerprint(record: ToolRecord): string {
+  const input = parseInput(record.input)
   return stableHash({ input: normalizeFingerprintInput(record, input) })
 }
 
-const SHELL_INPUT_KEYS = new Set(['command', 'cmd', 'script', 'shell'])
+const SHELL_INPUT_KEYS = new Set(['command'])
 
 function normalizeShellRecord(value: UnknownRecord, depth: number): UnknownRecord {
   return Object.fromEntries(
@@ -91,9 +123,7 @@ function normalizeShellRecord(value: UnknownRecord, depth: number): UnknownRecor
 }
 
 function normalizeShellProperty(value: unknown, key: string, depth: number): unknown {
-  return SHELL_INPUT_KEYS.has(key)
-    ? normalizeShellInput(value, depth + 1, true)
-    : normalizeShellInput(value, depth + 1)
+  return normalizeShellInput(value, depth + 1, SHELL_INPUT_KEYS.has(key))
 }
 
 function normalizeShellValue(value: unknown, depth: number): unknown {
@@ -110,7 +140,7 @@ function normalizeNonNullShellValue(value: unknown, depth: number): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeShellInput(item, depth + 1))
+    return value.map((item) => normalizeShellInput(item, depth + 1, false))
   }
 
   if (!isRecord(value)) {
@@ -120,20 +150,12 @@ function normalizeNonNullShellValue(value: unknown, depth: number): unknown {
   return normalizeShellRecord(value, depth)
 }
 
-function normalizeShellInput(value: unknown, depth = 0, isCommandValue = false): unknown {
-  return normalizeShellInputAt(value, depth, isCommandValue)
-}
-
-function normalizeShellInputAt(value: unknown, depth: number, isCommandValue: boolean): unknown {
+function normalizeShellInput(value: unknown, depth: number, isCommandValue: boolean): unknown {
   if (depth > 8) {
     return '[DepthLimit]'
   }
 
-  if (isCommandValue) {
-    return shellTokens(commandText(value))
-  }
-
-  return normalizeShellValue(value, depth)
+  return isCommandValue ? shellTokens(commandText(value)) : normalizeShellValue(value, depth)
 }
 
 function directToolKind(tool: string): ToolKind | undefined {
@@ -153,7 +175,7 @@ function directToolKind(tool: string): ToolKind | undefined {
 }
 
 function executionToolKind(record: ToolRecord): ToolKind {
-  return record?.status === 'success' && isRecognizedVerification(extractCommand(record))
+  return record.status === 'success' && isRecognizedVerification(extractCommand(record))
     ? 'verify'
     : 'execute'
 }
@@ -174,8 +196,4 @@ export function classifyToolCall(record: ToolRecord): ToolKind {
 
 export function operationFingerprint(record: ToolRecord): string {
   return stableHash(operationDescriptor(record))
-}
-
-export function inputFingerprintFor(record: ToolRecord): string {
-  return inputFingerprint(record)
 }

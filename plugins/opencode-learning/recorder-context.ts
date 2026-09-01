@@ -1,18 +1,14 @@
+import type { SessionContext } from '@opencode-ai/plugin/promise/session'
 import { isExplicitCorrection } from './scoring.ts'
 import { isRecord, sha256, trimText } from './shared.ts'
-import type { ContextEvent } from './sdk.ts'
 import type { ContextTailItem, ExperienceState, SessionHistory, UnknownRecord } from './types.ts'
 
-export function extractText(value: unknown, depth = 0): string {
+function extractText(value: unknown, depth = 0): string {
   if (isUnextractableText(value, depth)) {
     return ''
   }
 
-  return scalarText(value) ?? extractStructuredText(value, depth)
-}
-
-function scalarText(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined
+  return typeof value === 'string' ? value : extractStructuredText(value, depth)
 }
 
 function extractStructuredText(value: unknown, depth: number): string {
@@ -48,7 +44,7 @@ function extractRecordText(value: UnknownRecord, depth: number): string {
     return extractText(value.content, depth + 1)
   }
 
-  return extractRecordTextFallback(value, depth)
+  return ''
 }
 
 function extractTypedText(value: UnknownRecord, depth: number): string | undefined {
@@ -97,50 +93,18 @@ function toolResultValue(value: unknown): unknown {
     return undefined
   }
 
-  return value.value ?? undefined
+  return value.value
 }
 
 function extractToolCallText(value: unknown, depth: number): string | undefined {
   return value === null || value === undefined ? undefined : extractText(value, depth + 1)
 }
 
-function extractRecordTextFallback(value: UnknownRecord, depth: number): string {
-  return (
-    ['text', 'content', 'message', 'output']
-      .map((key) => fallbackText(value, key, depth))
-      .find((text) => text.length > 0) ?? ''
-  )
-}
-
-function fallbackText(value: UnknownRecord, key: string, depth: number): string {
-  return Object.hasOwn(value, key) ? extractText(value[key], depth + 1) : ''
-}
-
-function messageRole(message: unknown): string | undefined {
-  if (!isRecord(message) || typeof message.role !== 'string') {
-    return undefined
-  }
-
-  return message.role
-}
-
-export function contextSessionId(event: ContextEvent): string {
-  const context = event as unknown as { sessionID?: unknown }
-  const sessionId = context.sessionID
-  return typeof sessionId === 'string' ? sessionId : ''
-}
-
-export function contextMessages(event: ContextEvent): unknown[] {
-  const context = event as unknown as { messages?: unknown }
-  const { messages } = context
-  return Array.isArray(messages) ? messages : []
-}
-
-export function normalizeContextMessages(messages: unknown[]): ContextTailItem[] {
+function normalizeContextMessages(messages: SessionContext['messages']): ContextTailItem[] {
   let previousRole: string | undefined
   const normalized: ContextTailItem[] = []
   for (const message of messages) {
-    const role = messageRole(message)
+    const { role } = message
     const text = trimText(extractText(message), 1800)
     if (text.length > 0) {
       normalized.push({
@@ -156,7 +120,7 @@ export function normalizeContextMessages(messages: unknown[]): ContextTailItem[]
   return normalized
 }
 
-export function updateExperienceGoal(
+function updateExperienceGoal(
   exp: ExperienceState,
   sessionID: string,
   users: ContextTailItem[],
@@ -178,12 +142,25 @@ export function updateExperienceGoal(
   }
 }
 
-export function recordContextCorrections(exp: ExperienceState, users: ContextTailItem[]): void {
+function recordContextCorrections(exp: ExperienceState, users: ContextTailItem[]): void {
   for (const item of users) {
     recordContextCorrection(exp, item)
   }
 
   exp.corrections = exp.corrections.slice(-12)
+}
+
+export function observeContext(
+  exp: ExperienceState,
+  event: SessionContext,
+  history: Map<string, SessionHistory>
+): void {
+  exp.updatedAt = Date.now()
+  const tail = normalizeContextMessages(event.messages).slice(-8)
+  exp.contextTail = tail
+  const users = tail.filter((item) => item.role === 'user')
+  updateExperienceGoal(exp, event.sessionID, users, history)
+  recordContextCorrections(exp, users)
 }
 
 function recordContextCorrection(exp: ExperienceState, item: ContextTailItem): void {

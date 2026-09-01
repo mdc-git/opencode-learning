@@ -1,5 +1,4 @@
-import type { EnrichedCall, FeatureSignal } from './scoring-types.ts'
-import { stableHash } from './scoring-hash.ts'
+import type { EnrichedCall } from './scoring-types.ts'
 
 type RecoveryState = {
   pairedFailures: Set<number>
@@ -93,7 +92,7 @@ function isRecoveryMatch(
 ): boolean {
   return (
     isCandidateFailure(candidate, pairedFailures, nonInspectionCalls) &&
-    isSameOperation(candidate, success) &&
+    candidate.operationFingerprint === success.operationFingerprint &&
     candidate.inputFingerprint !== success.inputFingerprint
   )
 }
@@ -109,32 +108,4 @@ function isCandidateFailure(
     !pairedFailures.has(candidate.index) &&
     nonInspectionCalls <= 2
   )
-}
-
-function isSameOperation(candidate: EnrichedCall, success: EnrichedCall): boolean {
-  return candidate.operationFingerprint === success.operationFingerprint
-}
-
-export function addRecoverySignals(
-  pairs: Array<{ failure: EnrichedCall; success: EnrichedCall }>,
-  signalState: { signals: FeatureSignal[]; seen: Set<string> },
-  addSignal: (
-    signals: FeatureSignal[],
-    seen: Set<string>,
-    kind: 'correction' | 'recovery' | 'workflow',
-    value: unknown
-  ) => void
-): void {
-  for (const pair of pairs) {
-    addSignal(
-      signalState.signals,
-      signalState.seen,
-      'recovery',
-      stableHash({
-        operation: pair.failure.operationFingerprint,
-        failedInput: pair.failure.inputFingerprint,
-        successfulInput: pair.success.inputFingerprint
-      })
-    )
-  }
 }

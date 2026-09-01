@@ -4,36 +4,6 @@ import { assertNoSymlinkPath, atomicWrite, hasErrorCode } from './shared.ts'
 import { isSafeSupportPath } from './store-validation.ts'
 import type { Proposal, SectionOperation, SupportingFile } from './types.ts'
 
-type SupportingFileStore = {
-  addSupportingFiles: (skillDir: string, files: SupportingFile[]) => Promise<void>
-}
-
-export function proposalFiles(proposal: Proposal): SupportingFile[] {
-  return proposal.skill?.files ?? []
-}
-
-export async function writeCreatedSkill({
-  store,
-  dir,
-  file,
-  text,
-  files
-}: {
-  store: SupportingFileStore
-  dir: string
-  file: string
-  text: string
-  files: SupportingFile[]
-}): Promise<void> {
-  try {
-    await atomicWrite(file, text)
-    await store.addSupportingFiles(dir, files)
-  } catch (error) {
-    await fs.rm(dir, { recursive: true, force: true })
-    throw error
-  }
-}
-
 export function applyOperations(markdown: string, operations: SectionOperation[]): string {
   let text = markdown
   for (const operation of operations) {
@@ -118,9 +88,8 @@ export function safePending(root: string, id: string): string {
 }
 
 export function supportPath(skillDir: string, relative: string): string {
-  const invalidRelativePath = relative
   if (!isSafeSupportPath(relative)) {
-    throw new Error(`invalid supporting file path: ${invalidRelativePath}`)
+    throw new Error(`invalid supporting file path: ${relative}`)
   }
 
   const target = path.resolve(skillDir, relative)
@@ -131,7 +100,7 @@ export function supportPath(skillDir: string, relative: string): string {
   return target
 }
 
-export async function walk(
+async function walk(
   root: string,
   current: string,
   out: Array<{ path: string; bytes: number }>
@@ -158,6 +127,14 @@ export async function walk(
       }
     })
   )
+}
+
+export async function listSupportingFiles(
+  skillDir: string
+): Promise<Array<{ path: string; bytes: number }>> {
+  const out: Array<{ path: string; bytes: number }> = []
+  await walk(skillDir, skillDir, out)
+  return out.filter((item) => item.path !== 'SKILL.md').slice(0, 100)
 }
 
 export async function reserveDirectory(dir: string, message: string): Promise<void> {

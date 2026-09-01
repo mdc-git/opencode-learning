@@ -1,84 +1,43 @@
-import { notifySession } from './events.ts'
+import { notifySession } from './review-sessions.ts'
 import { SESSION_ID_KEY } from './shared.ts'
-import type { OpenCodeContext, SessionInfo } from './sdk.ts'
+import type { OpenCodeContext } from './sdk.ts'
 import type { SkillStore } from './store.ts'
-import type {
-  Candidate,
-  ExperienceSnapshot,
-  Proposal,
-  Validation,
-  ValidationSubmission
-} from './types.ts'
+import { stage as stageSkill } from './store-operations.ts'
+import type { Proposal, Validation, ValidationSubmission, LearningConfig } from './types.ts'
 import type { TriggerDecision } from './scoring.ts'
 import type { Telemetry } from './telemetry.ts'
-import type {
-  ReviewOutcome,
-  ReviewResultOptions,
-  ReviewScore,
-  ReviewValidation
-} from './review-types.ts'
-import { recordReviewResult, summarizeNoChange } from './review-result-details.ts'
 
-export async function maybeValidateProposal({
-  enabled,
-  deterministic,
-  proposal,
-  directory,
-  model,
-  exp,
-  candidates,
-  validate
-}: {
-  enabled: boolean
+export type ReviewValidation = {
   deterministic: Validation
-  proposal: Proposal
-  directory: string
-  model: SessionInfo['model'] | undefined
-  exp: ExperienceSnapshot
-  candidates: Candidate[]
-  validate: (options: {
-    directory: string
-    model: SessionInfo['model'] | undefined
-    exp: ExperienceSnapshot
-    candidates: Candidate[]
-    proposal: Proposal
-    deterministic: Validation
-  }) => Promise<ValidationSubmission>
-}): Promise<ValidationSubmission> {
-  if (!enabled || !deterministic.ok || proposal.decision === 'none') {
-    return {
-      decision: 'accept',
-      reason: 'agent validation disabled',
-      warnings: []
-    }
-  }
-
-  return validate({ directory, model, exp, candidates, proposal, deterministic })
-}
-
-export function reviewValidation(
-  deterministic: Validation,
-  proposal: Proposal,
   agent: ValidationSubmission
-): ReviewValidation {
-  return {
-    deterministic,
-    agent,
-    ok: deterministic.ok && (proposal.decision === 'none' || agent.decision === 'accept')
-  }
+  ok: boolean
 }
-
-export function reviewScore(triggerDecision: TriggerDecision | undefined): ReviewScore {
-  if (triggerDecision === undefined) {
-    return undefined
-  }
-
-  return {
-    score: triggerDecision.score,
-    threshold: triggerDecision.threshold,
-    reasons: triggerDecision.reasons,
-    signals: triggerDecision.strongSignals
-  }
+export type ReviewScore =
+  | {
+      score: number
+      threshold: number
+      reasons: TriggerDecision['reasons']
+      signals: TriggerDecision['strongSignals']
+    }
+  | undefined
+type CompletedReview = { proposal: Proposal; validation: ReviewValidation; score: ReviewScore }
+export type ReviewOutcome =
+  | (CompletedReview & { status: 'no-change' })
+  | (CompletedReview & { status: 'staged'; staged: { id: string; dir: string } })
+  | (CompletedReview & { status: 'applied'; applied: unknown })
+  | { status: 'disposed' }
+type ReviewResultOptions = {
+  ctx: OpenCodeContext
+  store: SkillStore
+  telemetry: Telemetry
+  config: LearningConfig
+  sessionID: string
+  terminalType: string
+  force: boolean
+  score: ReviewScore
+  isActive: () => boolean
+  proposal: Proposal
+  validation: ReviewValidation
 }
 
 export function createAutomaticReviewStart(telemetry: Telemetry, isForced: boolean): () => void {
@@ -97,8 +56,29 @@ export function createAutomaticReviewStart(telemetry: Telemetry, isForced: boole
 
 export async function finishReview(options: ReviewResultOptions): Promise<ReviewOutcome> {
   const { proposal, validation } = options
-  await recordReviewResult(options)
-  if (!validation.ok || proposal.decision === 'none') {
+  await options.telemetry
+    .recordReview({
+      [SESSION_ID_KEY]: options.sessionID,
+      trigger: ['automatic', 'forced'][Number(options.force)],
+      terminalType: options.terminalType,
+      score: options.score,
+      decision: proposal.decision,
+      skillId: proposal.skillId,
+      validation
+    })
+    .catch((error: unknown) => {
+      console.error('[opencode-learning] telemetry recordReview failed', error)
+    })
+  return options.isActive() ? finishActiveReview(options) : { status: 'disposed' }
+}
+
+async function finishActiveReview(options: ReviewResultOptions): Promise<ReviewOutcome> {
+  const { proposal, validation } = options
+  if (proposal.decision === 'none') {
+    return finishNoChange(options)
+  }
+
+  if (!validation.ok) {
     return finishNoChange(options)
   }
 
@@ -116,10 +96,8 @@ async function finishNoChange({
   force,
   config,
   score,
-  triggerDecision,
   proposal,
-  validation,
-  recordFingerprint
+  validation
 }: ReviewResultOptions): Promise<ReviewOutcome> {
   if (force && config.notify) {
     await notifySession(
@@ -129,7 +107,6 @@ async function finishNoChange({
     )
   }
 
-  recordFingerprint(sessionID, triggerDecision, 'no-change')
   if (!force) {
     await telemetry.recordTriggerOutcome('no-change').catch(console.error)
   }
@@ -144,13 +121,11 @@ async function finishStaged({
   force,
   config,
   score,
-  triggerDecision,
   proposal,
   validation,
-  store,
-  recordFingerprint
+  store
 }: ReviewResultOptions): Promise<ReviewOutcome> {
-  const staged = await store.stage(proposal, validation)
+  const staged = await stageSkill(store, proposal, validation)
   if (force && config.notify) {
     await notifySession(
       ctx,
@@ -159,7 +134,6 @@ async function finishStaged({
     )
   }
 
-  recordFingerprint(sessionID, triggerDecision, 'accepted')
   if (!force) {
     await telemetry.recordTriggerOutcome('staged').catch(console.error)
   }
@@ -174,29 +148,29 @@ async function finishApplied({
   force,
   config,
   score,
-  triggerDecision,
   proposal,
   validation,
-  store,
-  recordFingerprint
+  store
 }: ReviewResultOptions): Promise<ReviewOutcome> {
-  const applied = await applyProposal(store, proposal)
-  const skillId = proposal.skillId ?? ''
+  const skillId = proposal.skillId!
+  let applied: unknown
   if (proposal.decision === 'create') {
+    applied = await store.create(proposal, { scope: proposal.scope! })
     await telemetry.recordCreated(skillId)
   } else {
+    applied = await store.patch(proposal, { scope: proposal.scope! })
     await telemetry.recordPatched(skillId)
   }
 
   await ctx.skill.reload()
-  await notifyAppliedReview({
-    ctx,
-    [SESSION_ID_KEY]: sessionID,
-    isForced: force,
-    shouldNotify: config.notify,
-    proposal
-  })
-  recordFingerprint(sessionID, triggerDecision, 'accepted')
+  if ([force, config.notify].every(Boolean)) {
+    await notifySession(
+      ctx,
+      sessionID,
+      `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`
+    )
+  }
+
   if (!force) {
     await telemetry.recordTriggerOutcome('applied').catch(console.error)
   }
@@ -204,32 +178,26 @@ async function finishApplied({
   return { status: 'applied', applied, proposal, validation, score }
 }
 
-async function applyProposal(store: SkillStore, proposal: Proposal): Promise<unknown> {
-  if (proposal.decision === 'create') {
-    return store.create(proposal, { scope: proposal.scope })
+function summarizeNoChange(proposal: Proposal, validation: ReviewValidation): string {
+  if (proposal.decision === 'none') {
+    return noChangeProposalReason(proposal.reason)
   }
 
-  return store.patch(proposal, { scope: proposal.scope })
+  if (!validation.deterministic.ok) {
+    return validationErrors(validation)
+  }
+
+  return rejectedReason(validation)
 }
 
-async function notifyAppliedReview({
-  ctx,
-  sessionID,
-  isForced,
-  shouldNotify,
-  proposal
-}: {
-  ctx: OpenCodeContext
-  sessionID: string
-  isForced: boolean
-  shouldNotify: boolean
-  proposal: Proposal
-}): Promise<void> {
-  if (isForced && shouldNotify) {
-    await notifySession(
-      ctx,
-      sessionID,
-      `[opencode-learning] Applied ${proposal.decision} for learned skill ${proposal.skillId} and reloaded skills.`
-    )
-  }
+function noChangeProposalReason(reason: string | undefined): string {
+  return reason === undefined || reason.length === 0 ? 'nothing durable was found' : reason
+}
+
+function validationErrors(validation: ReviewValidation): string {
+  return validation.deterministic.errors.join('; ')
+}
+
+function rejectedReason(validation: ReviewValidation): string {
+  return validation.agent.decision === 'reject' ? validation.agent.reason : 'no durable change'
 }

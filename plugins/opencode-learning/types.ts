@@ -1,4 +1,4 @@
-import type { Experience } from './scoring.ts'
+import type { CorrectionSignal, Experience, ToolRecord } from './scoring-types.ts'
 
 export type Mode = 'off' | 'suggest' | 'auto'
 export type CuratorConfig = {
@@ -26,6 +26,15 @@ export type LearningConfig = {
   curator: CuratorConfig
 }
 export type UnknownRecord = Record<string, unknown>
+export type OwnedSkill = {
+  skillId: string
+  scope: string
+  file: string
+  dir: string
+  text: string
+  sha256: string
+  supportingFiles: Array<{ path: string; bytes: number }>
+}
 export type SupportingFile = { path: string; content: string }
 export type SkillPayload = {
   name: string
@@ -38,7 +47,7 @@ export type SectionOperation = {
   heading: string
   body: string
 }
-export type Proposal = UnknownRecord & {
+export type Proposal = {
   decision?: string
   skillId?: string
   scope?: string
@@ -50,18 +59,14 @@ export type Proposal = UnknownRecord & {
   operations?: SectionOperation[]
   addFiles?: SupportingFile[]
 }
-export type Validation = UnknownRecord & { ok: boolean; errors: string[]; warnings: string[] }
-export type ValidationSubmission = UnknownRecord & {
+export type Validation = { ok: boolean; errors: string[]; warnings: string[] }
+export type ValidationSubmission = {
   decision: 'accept' | 'reject'
   reason: string
   warnings: string[]
 }
-export type ContextTailItem = { role?: string; text: string; followsAssistant: boolean }
-export type ToolCall = {
-  tool: string
-  turn: number
-  input: string
-  status: 'success' | 'error' | 'unknown'
+export type ContextTailItem = { role: string; text: string; followsAssistant: boolean }
+export type ToolCall = ToolRecord & {
   result: string
   durationMs?: number
   at: number
@@ -74,7 +79,7 @@ export type ExperienceState = {
   goal: string
   contextTail: ContextTailItem[]
   corrections: string[]
-  correctionSignals: UnknownRecord[]
+  correctionSignals: CorrectionSignal[]
   seenUserMessages: Set<string>
   toolCalls: ToolCall[]
   skillsUsed: Set<string>
@@ -85,7 +90,6 @@ export type ExperienceState = {
 }
 export type PendingTool = {
   sessionID: string
-  callId: string
   tool: string
   input: string
   startedAt: number
@@ -97,7 +101,7 @@ export type ExperienceSnapshot = Experience & {
   goal: string
   contextTail: ContextTailItem[]
   corrections: string[]
-  correctionSignals: UnknownRecord[]
+  correctionSignals: CorrectionSignal[]
   seenUserMessages?: undefined
   toolCalls: ToolCall[]
   skillsUsed: string[]

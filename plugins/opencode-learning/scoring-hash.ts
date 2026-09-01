@@ -49,13 +49,9 @@ export function stableHash(value: unknown): string {
   return createHash('sha256').update(stableSerialize(value, new Set())).digest('hex')
 }
 
-export function isSha256(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/iv.test(value.trim())
-}
-
 export function safeSignalHash(value: unknown): string {
   const text = typeof value === 'string' ? value.trim() : ''
-  return isSha256(text) ? text.toLowerCase() : stableHash(value)
+  return /^[0-9a-f]{64}$/iv.test(text) ? text.toLowerCase() : stableHash(value)
 }
 
 export function normalizedTarget(value: unknown): string {

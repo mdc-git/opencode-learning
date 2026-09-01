@@ -1,5 +1,5 @@
-import { SESSION_ID_KEY } from './shared.ts'
 import type { OpenCodeContext } from './sdk.ts'
+import { SESSION_ID_KEY } from './shared.ts'
 
 const COMMANDS = [
   {
