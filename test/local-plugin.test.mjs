@@ -12,6 +12,17 @@ import { test } from 'node:test'
 const repository = path.resolve(import.meta.dirname, '..')
 const password = 'learning-plugin-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
+const learningAgents = ['learning-reflector', 'learning-validator']
+const learningCommands = [
+  'learn',
+  'learn-pending',
+  'learn-show',
+  'learn-approve',
+  'learn-reject',
+  'learn-status',
+  'learn-curate',
+  'learn-promote'
+]
 
 function withServerDiagnostics(message, diagnostics) {
   return [message, diagnostics.stderr === '' ? '' : `Server stderr:\n${diagnostics.stderr}`]
@@ -220,6 +231,24 @@ function startServer(project, root) {
   return { server, diagnostics }
 }
 
+async function assertLearningRegistrations(base, project, diagnostics) {
+  const locationQuery = `?location%5Bdirectory%5D=${encodeURIComponent(project)}`
+  const [agents, commands] = await Promise.all([
+    api(base, `/api/agent${locationQuery}`, diagnostics),
+    api(base, `/api/command${locationQuery}`, diagnostics)
+  ])
+  assert.deepEqual(
+    new Set(agents.data.map(({ id }) => id).filter((id) => learningAgents.includes(id))),
+    new Set(learningAgents)
+  )
+  assert.deepEqual(
+    new Set(
+      commands.data.map(({ name }) => name).filter((name) => learningCommands.includes(name))
+    ),
+    new Set(learningCommands)
+  )
+}
+
 test('loads the local learning plugin in a standalone session from a temp project', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   let server
@@ -256,6 +285,8 @@ test('loads the local learning plugin in a standalone session from a temp projec
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
     assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
+
+    await assertLearningRegistrations(base, project, started.diagnostics)
   } finally {
     try {
       if (server) {
