@@ -126,11 +126,17 @@ async function finishStaged({
   store
 }: ReviewResultOptions): Promise<ReviewOutcome> {
   const staged = await stageSkill(store, proposal, validation)
-  if (force && config.notify) {
+  if (config.notify) {
     await notifySession(
       ctx,
       sessionID,
-      `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`
+      `[opencode-learning] Staged ${proposal.decision} proposal ${staged.id} for ${proposal.skillId}. Inspect with /learn-show ${staged.id} or /learn-pending.`,
+      {
+        type: 'proposal-staged',
+        proposalId: staged.id,
+        decision: proposal.decision,
+        skillId: proposal.skillId
+      }
     )
   }
 

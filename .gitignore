@@ -8,3 +8,6 @@ package-lock.json
 !.opencode/index.ts
 !.opencode/commands/
 !.opencode/commands/deploy.md
+!.opencode/plugins/
+!.opencode/plugins/tui/
+!.opencode/plugins/tui/local-learning-tui.tsx

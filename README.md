@@ -152,7 +152,8 @@ This repository includes a tracked local V2 harness in `.opencode/`:
 - `opencode.jsonc` removes the globally deployed `github.learning_skills` plugin.
 - `index.ts` loads the checkout entrypoint and assigns the local
   `local.learning_skills` ID.
-- This is a server-only plugin; it does not provide a TUI addon.
+- The server plugin advertises and ships a TUI addon for staged-proposal notifications.
+- `.opencode/plugins/tui/local-learning-tui.tsx` assigns the local TUI addon ID.
 - `.opencode/cli.json` is available only for an intentionally isolated config
   directory; the normal workflow keeps the global CLI configuration active.
 
@@ -376,7 +377,7 @@ skill.
 | `maxCandidates`            | `5`                         | Maximum skill candidates sent to the reflector.                                                                                                           |
 | `confidenceThreshold`      | `0.72`                      | Minimum proposal confidence.                                                                                                                              |
 | `agentValidation`          | `true`                      | Run the hidden validator.                                                                                                                                 |
-| `notify`                   | `true`                      | Add synthetic session notices for reviews explicitly started with `/learn`; automatic reviews remain silent.                                              |
+| `notify`                   | `true`                      | Add synthetic session notices and TUI toast notifications when a proposal is staged.                                                                      |
 | `projectSkillDir`          | `.opencode/skills`          | Learned-skill path relative to the project root.                                                                                                          |
 | `stateDir`                 | `.opencode/.learning`       | Runtime-state path relative to the project root.                                                                                                          |
 | `globalSkillDir`           | `~/.config/opencode/skills` | Explicit promotion destination.                                                                                                                           |

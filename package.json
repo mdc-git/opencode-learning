@@ -5,7 +5,10 @@
   "license": "MIT",
   "repository": "github:mdc-git/opencode-learning",
   "type": "module",
-  "exports": "./plugins/opencode-learning/index.ts",
+  "exports": {
+    ".": "./plugins/opencode-learning/index.ts",
+    "./tui": "./plugins/opencode-learning/tui.tsx"
+  },
   "sideEffects": false,
   "engines": {
     "node": ">=20.0.0"
@@ -32,6 +35,8 @@
     "@opencode-ai/plugin": "beta"
   },
   "devDependencies": {
+    "@opentui/core": "^0.5.8",
+    "@opentui/solid": "^0.5.8",
     "@types/node": "^22.20.1",
     "dependency-cruiser": "^16.10.4",
     "eslint": "^10.8.1",
@@ -41,7 +46,13 @@
     "globals": "^17.11.0",
     "knip": "^5.88.1",
     "prettier": "^3.9.6",
+    "solid-js": "^1.9.0",
     "typescript": "^6.0.3"
+  },
+  "peerDependencies": {
+    "@opentui/core": ">=0.5.8",
+    "@opentui/solid": ">=0.5.8",
+    "solid-js": ">=1.9.0"
   },
   "//": "Keep @opencode-ai/plugin on the beta dist-tag so this plugin follows the OpenCode beta package family."
 }

@@ -17,7 +17,7 @@ export default defineConfig([
   },
 
   {
-    files: ['**/*.{ts,mjs,js}'],
+    files: ['**/*.{ts,tsx,mjs,js}'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',

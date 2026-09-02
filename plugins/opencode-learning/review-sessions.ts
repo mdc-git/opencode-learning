@@ -164,14 +164,15 @@ async function runReviewSession<T>({
 export async function notifySession(
   ctx: OpenCodeContext,
   sessionID: string,
-  text: string
+  text: string,
+  metadata?: Record<string, unknown>
 ): Promise<void> {
   try {
     await ctx.session.synthetic({
       [SESSION_ID_KEY]: sessionID,
       text,
       description: 'opencode-learning',
-      metadata: { source: 'opencode-learning' },
+      metadata: { source: 'opencode-learning', ...metadata },
       delivery: 'queue',
       resume: false
     })
