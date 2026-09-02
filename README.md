@@ -150,10 +150,10 @@ declared dependencies into an isolated cache, and loads the plugin. See
 This repository includes a tracked local V2 harness in `.opencode/`:
 
 - `opencode.jsonc` removes the globally deployed `github.learning_skills` plugin.
-- `index.ts` loads the checkout entrypoint and assigns the local
+- `.opencode/plugins/learning/index.ts` loads the checkout entrypoint and assigns the local
   `local.learning_skills` ID.
 - The server plugin advertises and ships a TUI addon for staged-proposal notifications.
-- `.opencode/plugins/tui/local-learning-tui.tsx` assigns the local TUI addon ID.
+- `.opencode/plugins/learning/tui.tsx` assigns the local TUI addon ID.
 - `.opencode/cli.json` is available only for an intentionally isolated config
   directory; the normal workflow keeps the global CLI configuration active.
 

@@ -281,7 +281,7 @@ test('loads the local learning plugin in a standalone session from a temp projec
     const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
-    assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
+    assert.equal(plugin.source.path, path.join(pluginDirectory, 'plugins', 'learning', 'index.ts'))
   } finally {
     try {
       if (server) {
