@@ -258,7 +258,7 @@ test('loads the local learning plugin in a standalone session from a temp projec
     )
 
     const project = path.join(root, 'project')
-    const pluginDirectory = path.join(repository, '.opencode')
+    const pluginDirectory = path.join(repository, '.opencode', 'plugins', 'learning')
     await mkdir(project, { recursive: true })
     await mkdir(path.join(root, 'tmp'), { recursive: true })
     await writeFile(
@@ -281,7 +281,7 @@ test('loads the local learning plugin in a standalone session from a temp projec
     const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')
-    assert.equal(plugin.source.path, path.join(pluginDirectory, 'plugins', 'learning', 'index.ts'))
+    assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
   } finally {
     try {
       if (server) {
