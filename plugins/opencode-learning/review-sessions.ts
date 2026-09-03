@@ -2,13 +2,15 @@ import { buildReviewPrompt, buildValidationPrompt } from './review-candidates.ts
 import { SESSION_ID_KEY } from './shared.ts'
 import type { InternalMailbox } from './mailbox.ts'
 import type { OpenCodeContext, SessionCreateInput, SessionInfo } from './sdk.ts'
-import type {
-  Candidate,
-  ExperienceSnapshot,
-  LearningConfig,
-  Proposal,
-  Validation,
-  ValidationSubmission
+import {
+  REFLECTOR_SESSION_TITLE,
+  VALIDATOR_SESSION_TITLE,
+  type Candidate,
+  type ExperienceSnapshot,
+  type LearningConfig,
+  type Proposal,
+  type Validation,
+  type ValidationSubmission
 } from './types.ts'
 import type { TriggerDecision } from './scoring.ts'
 
@@ -68,7 +70,7 @@ export async function runReflector({
     directory,
     model,
     agent: config.reflectorAgent,
-    title: 'Procedural skill reflection'
+    title: REFLECTOR_SESSION_TITLE
   })
   const { id } = session
   onReflectorStart?.()
@@ -98,7 +100,7 @@ export async function runValidator({
     directory,
     model,
     agent: config.validatorAgent,
-    title: 'Procedural skill validation'
+    title: VALIDATOR_SESSION_TITLE
   })
   const { id } = session
   return runReviewSession({

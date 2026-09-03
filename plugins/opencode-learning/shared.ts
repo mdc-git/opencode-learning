@@ -4,7 +4,7 @@ import crypto from 'node:crypto'
 import { pid } from 'node:process'
 import type { Proposal, UnknownRecord } from './types.ts'
 
-export const SESSION_ID_KEY = 'sessionID'
+export { SESSION_ID_KEY } from './types.ts'
 
 export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value)

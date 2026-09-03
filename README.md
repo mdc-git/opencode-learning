@@ -333,10 +333,11 @@ rather than the service process directory. Child sessions and the plugin's
 internal reviewer sessions are excluded.
 
 Reflector and validator work runs in dedicated sessions with restricted
-structured callback tools. Their output is checked before any write. Internal
-sessions are interrupted after completion or timeout. Skill changes use the
-native skill reload capability, so accepted changes become available without a
-service restart.
+structured callback tools. Their output is checked before any write. The TUI
+addon removes marked reviewer sessions after every terminal outcome and sweeps
+inactive marked reviewer sessions at startup; without a TUI, those sessions
+remain durable. Skill changes use the native skill reload capability, so
+accepted changes become available without a service restart.
 
 Automatic completion detection uses the public event stream. That stream is
 volatile by contract, so disconnected events are not replayed. Automatic

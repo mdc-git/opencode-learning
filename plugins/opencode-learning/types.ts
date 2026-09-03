@@ -1,5 +1,10 @@
 import type { CorrectionSignal, Experience, ToolRecord } from './scoring-types.ts'
 
+export const SESSION_ID_KEY = 'sessionID'
+export const REVIEW_SESSION_TITLE_PREFIX = '[opencode-learning] reviewer: '
+export const REFLECTOR_SESSION_TITLE = `${REVIEW_SESSION_TITLE_PREFIX}reflection`
+export const VALIDATOR_SESSION_TITLE = `${REVIEW_SESSION_TITLE_PREFIX}validation`
+
 export type Mode = 'off' | 'suggest' | 'auto'
 export type CuratorConfig = {
   enabled: boolean
