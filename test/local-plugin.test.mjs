@@ -73,10 +73,19 @@ async function api(base, requestPath, diagnostics, options = {}) {
       )
     }
 
-    return await response.json()
+    return response.status === 204 ? undefined : await response.json()
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function awaitActivation(base, directory, diagnostics) {
+  return api(
+    base,
+    `/api/plugin/await-activation?location%5Bdirectory%5D=${encodeURIComponent(directory)}`,
+    diagnostics,
+    { method: 'POST', body: '{}' }
+  )
 }
 
 function pluginTimeoutError(diagnostics, statuses, plugins) {
@@ -249,14 +258,12 @@ function startServer(project, root) {
 test('loads the local learning plugin in a standalone session from a temp project', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   let server
-
   try {
     const relative = path.relative(repository, root)
     assert.ok(
       relative.startsWith('..') || path.isAbsolute(relative),
       'Temporary project must be outside the repository'
     )
-
     const project = path.join(root, 'project')
     const pluginDirectory = path.join(repository, '.opencode', 'plugins', 'learning')
     await mkdir(project, { recursive: true })
@@ -268,7 +275,6 @@ test('loads the local learning plugin in a standalone session from a temp projec
         plugins: [pluginDirectory]
       })}\n`
     )
-
     const started = startServer(project, root)
     server = started.server
     const base = await readServerUrl(server, started.diagnostics)
@@ -277,7 +283,7 @@ test('loads the local learning plugin in a standalone session from a temp projec
       body: JSON.stringify({ location: { directory: project } })
     })
     assert.ok(session.data.id)
-
+    await awaitActivation(base, project, started.diagnostics)
     const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
     assert.equal(plugin.state.status, 'active')
     assert.equal(plugin.source.type, 'local')

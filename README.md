@@ -137,13 +137,10 @@ declared dependencies into an isolated cache, and loads the plugin. See
 [Verify](#verify) below to confirm it loaded.
 
 > [!NOTE]
-> V2 stores a git package install under a cache key such as
-> `~/.cache/opencode/packages/git-<sha256>/`, not under a package-named
-> directory. The local development override below does not use that package
-> cache. If a deployed package reports an install error, inspect the service
-> log and the exact cache entry before removing anything.
->
-> The package loader refreshes mutable git references when they are loaded.
+> The native `opencode2 plugin update` command refreshes the configured package
+> and notifies active locations to reload it. The local development override
+> below does not use the package cache. If a deployed package reports an
+> install error, inspect the service log and plugin state.
 
 ## Local development
 
@@ -160,7 +157,6 @@ This repository includes a tracked local V2 harness in `.opencode/`:
 Run the private server and TUI from the repository root:
 
 ```sh
-cd /Storage/Development/opencode-learning
 npm install
 opencode2 --standalone
 ```
@@ -202,14 +198,14 @@ The global Git installation uses the package export, not the project-local
 
 1. Run the developer checks below.
 2. Commit and push the change.
-3. Run `/deploy` from this repository, or remove the exact cache entry and
-   restart the background service.
+3. Run `/deploy` from this repository. It runs the native targeted
+   `opencode2 plugin check` and `opencode2 plugin update` commands.
+4. Verify the target location with `POST /api/plugin/await-activation`, then
+   inspect `GET /api/plugin` for the active package revision.
 
-V2 stores the package in a cache entry named
-`~/.cache/opencode/packages/git-<sha256>/`. `/deploy` derives the exact key from
-the configured Git package string, removes that entry, and restarts the service
-so V2 fetches a fresh checkout. Do not remove a package-named cache path or use
-a broad cache glob.
+The native updater refreshes the package and notifies active locations to
+reload it. Do not delete package caches manually or use service status as a
+plugin-readiness check.
 
 ## Developer checks
 

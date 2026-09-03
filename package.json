@@ -35,8 +35,8 @@
     "@opencode-ai/plugin": "beta"
   },
   "devDependencies": {
-    "@opentui/core": "^0.5.8",
-    "@opentui/solid": "^0.5.8",
+    "@opentui/core": "^0.5.10",
+    "@opentui/solid": "^0.5.10",
     "@types/node": "^22.20.1",
     "dependency-cruiser": "^16.10.4",
     "eslint": "^10.8.1",
@@ -46,12 +46,12 @@
     "globals": "^17.11.0",
     "knip": "^5.88.1",
     "prettier": "^3.9.6",
-    "solid-js": "^1.9.0",
+    "solid-js": "^1.9.12",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.5.8",
-    "@opentui/solid": ">=0.5.8",
+    "@opentui/core": ">=0.5.10",
+    "@opentui/solid": ">=0.5.10",
     "solid-js": ">=1.9.0"
   },
   "//": "Keep @opencode-ai/plugin on the beta dist-tag so this plugin follows the OpenCode beta package family."
