@@ -1,80 +1,46 @@
 # OpenCode procedural learning
 
-This OpenCode V2 plugin extracts reusable procedures from completed sessions
-and stores them as native OpenCode skills.
+OpenCode procedural learning is a V2 plugin that turns reusable procedures from completed sessions into native OpenCode skills.
 
 <!-- markdownlint-disable-next-line MD033 -->
 
 <video controls src="https://github.com/user-attachments/assets/e323399e-8978-4eab-b73b-1d0c442c5cd8"></video>
 
-Install it globally to use it in every project, or install it under one
-project's `.opencode` directory. Runtime state and learned skills remain local
-to each project in both cases.
+Install it globally to make it available in every project, or install it under one project's `.opencode` directory. In both cases, runtime state and learned skills remain local to each project.
 
 ## Why use it
 
-OpenCode sessions often uncover procedures that are useful again: a package
-manager quirk, a reliable debugging sequence, a project-specific deployment
-step, or a verification command that caught a bad change. This plugin turns
-that completed work into reviewable OpenCode skills instead of leaving it only
-in the session history.
+OpenCode sessions often uncover procedures worth keeping: a package-manager quirk, a reliable debugging sequence, a project-specific deployment step, or a verification command that catches a bad change. This plugin turns that completed work into reviewable OpenCode skills instead of leaving it only in session history.
 
-It is designed for procedural knowledge, not session summaries. A proposal must
-identify reusable steps, cite evidence from the completed work, pass
-deterministic checks, and optionally pass a second agent review. The default
-mode stages the result without changing the skill registry.
+It captures procedural knowledge rather than session summaries. A proposal must identify reusable steps, cite evidence from completed work, pass deterministic checks, and optionally pass a second agent review. The default mode stages the result for review without changing the skill registry.
 
 ## Example workflows
 
 ### Run the right checks before a pull request
 
-A repository may require more than its obvious test command. During a feature
-session, OpenCode learns that generated files must be refreshed first, type
-checking must run from a package subdirectory, and one targeted integration
-command catches failures the root test script misses. The plugin can preserve
-that verified sequence for future changes in the repository.
+A repository may need more than its obvious test command. A feature session can reveal that generated files must be refreshed first, type checking must run from a package subdirectory, and one targeted integration command catches failures the root test script misses. The plugin can preserve that verified sequence for future changes.
 
 ### Diagnose a flaky test
 
-A test fails intermittently because it depends on stale fixtures, an existing
-development server, or a specific environment variable. OpenCode tries several
-approaches, identifies the actual precondition, and confirms the reliable
-reproduction and cleanup steps. The resulting skill can guide the next agent
-straight to the useful diagnostic sequence.
+A test may fail intermittently because of stale fixtures, an existing development server, or a required environment variable. OpenCode can try several approaches, identify the actual precondition, and confirm the reliable reproduction and cleanup steps. The resulting skill can guide a later session directly to that diagnostic sequence.
 
 ### Follow repository conventions
 
-A user corrects OpenCode for editing generated output instead of its source,
-placing a component in the wrong package, or using a library the project has
-intentionally avoided. The plugin can turn the correction and the successful
-follow-up into a project skill that records where changes belong and how they
-should be verified.
+A user may correct OpenCode for editing generated output instead of its source, placing a component in the wrong package, or choosing a library the project intentionally avoids. The plugin can turn the correction and successful follow-up into a project skill that records where changes belong and how to verify them.
 
 ### Upgrade a dependency safely
 
-A dependency upgrade needs a configuration rename, regenerated artifacts, and
-a focused smoke test in addition to changing the version. Once OpenCode
-completes and verifies the upgrade, the plugin can preserve the repository's
-upgrade procedure for the next release.
+A dependency upgrade may require a configuration rename, regenerated artifacts, and a focused smoke test in addition to changing the version. After OpenCode completes and verifies the upgrade, the plugin can preserve the repository's upgrade procedure for the next release.
 
 ### Recover a local development environment
 
-The application stops starting after a branch switch because cached build
-output, containers, or generated clients are stale. OpenCode finds the minimum
-cleanup and restart sequence and verifies the health endpoint. That sequence
-can become a reusable troubleshooting skill instead of being rediscovered the
-next time the environment breaks.
+A branch switch may leave cached build output, containers, or generated clients stale. OpenCode can find the minimum cleanup and restart sequence, verify the health endpoint, and preserve that troubleshooting procedure for later use.
 
 ### Refine a procedure over time
 
-If a later session finds that an existing learned procedure is incomplete or
-outdated, the plugin can stage a focused patch rather than creating a duplicate
-skill. Approval fails when the original skill changed after the patch was
-proposed.
+If a later session finds an existing learned procedure incomplete or outdated, the plugin can stage a focused patch instead of creating a duplicate skill. Approval fails if the original skill changed after the patch was proposed.
 
-Use `/learn` when a short session contains valuable knowledge but does not meet
-the automatic score or signal requirements. Use `/learn-pending` to review all
-staged changes before accepting or rejecting them.
+Use `/learn` when a short session contains useful procedural knowledge but does not meet the automatic score or signal requirements. Use `/learn-pending` to review all staged changes before accepting or rejecting them.
 
 ## Requirements
 
@@ -83,12 +49,9 @@ staged changes before accepting or rejecting them.
 
 ## Install
 
-Add the plugin to your `opencode.json(c)` and let OpenCode install it
-automatically from git. No manual cloning or dependency management is needed.
+Add the plugin to your `opencode.json(c)` and let OpenCode install it from git. No manual clone or dependency setup is required.
 
-For global use, edit `~/.config/opencode/opencode.json(c)`. For a single
-project, edit `<project>/.opencode/opencode.json(c)` or
-`<project>/opencode.json(c)`:
+For global use, edit `${HOME}/.config/opencode/opencode.json(c)`. For one project, edit `<project>/.opencode/opencode.json(c)` or `<project>/opencode.json(c)`:
 
 ```jsonc
 {
@@ -120,39 +83,30 @@ project, edit `<project>/.opencode/opencode.json(c)` or
 }
 ```
 
-The plugin denies the callback tools to every configured agent, then allows
-each callback only for its matching hidden agent. Do not add global deny rules
-for these callbacks, because V2 global denies also block the matching agent.
-It also assigns an `ask` policy to the separate `learning_apply` action. Global
-promotion uses the configured `learning_promote` `ask` rule.
+The plugin denies its callback tools to every configured agent, then allows each callback only for the matching hidden agent. Do not add global deny rules for these callbacks because V2 global denies also block the matching agent.
 
-Restart the service after adding the entry:
+The plugin also assigns an `ask` policy to the separate `learning_apply` action. Global promotion uses the configured `learning_promote` `ask` rule.
+
+Restart the service after adding the plugin:
 
 ```sh
 opencode2 service restart
 ```
 
-OpenCode fetches the repository, resolves `@opencode-ai/plugin` and other
-declared dependencies into an isolated cache, and loads the plugin. See
-[Verify](#verify) below to confirm it loaded.
+OpenCode fetches the repository, resolves `@opencode-ai/plugin` and the other declared dependencies into an isolated cache, then loads the plugin. See [Verify](#verify) to confirm that it is active.
 
 > [!NOTE]
-> The native `opencode2 plugin update` command refreshes the configured package
-> and notifies active locations to reload it. The local development override
-> below does not use the package cache. If a deployed package reports an
-> install error, inspect the service log and plugin state.
+> The native `opencode2 plugin update` command refreshes the configured package and notifies active locations to reload it. The local development override below does not use the package cache. If a deployed package reports an install error, inspect the service log and plugin state.
 
 ## Local development
 
-This repository includes a tracked local V2 harness in `.opencode/`:
+The repository includes a tracked local V2 harness under `.opencode/`:
 
 - `opencode.jsonc` removes the globally deployed `github.learning_skills` plugin.
-- `.opencode/plugins/learning/index.ts` loads the checkout entrypoint and assigns the local
-  `local.learning_skills` ID.
+- `.opencode/plugins/learning/index.ts` loads the checkout entrypoint and assigns the local `local.learning_skills` ID.
 - The server plugin advertises and ships a TUI addon for staged-proposal notifications.
 - `.opencode/plugins/learning/tui.tsx` assigns the local TUI addon ID.
-- `.opencode/cli.json` is available only for an intentionally isolated config
-  directory; the normal workflow keeps the global CLI configuration active.
+- `.opencode/cli.json` is only for an intentionally isolated config directory. The normal workflow keeps the global CLI configuration active.
 
 Run the private server and TUI from the repository root:
 
@@ -161,10 +115,7 @@ npm install
 opencode2 --standalone
 ```
 
-Do not set `OPENCODE_CONFIG_DIR` for this normal checkout workflow. OpenCode
-uses the global configuration as the base and merges the project
-`.opencode/opencode.jsonc` on top of it. The removal operation prevents the
-deployed plugin and the local wrapper from registering the same plugin ID.
+Do not set `OPENCODE_CONFIG_DIR` for the normal checkout workflow. OpenCode uses the global configuration as its base and merges the project `.opencode/opencode.jsonc` on top. The removal entry prevents the deployed plugin and local wrapper from registering the same plugin ID.
 
 ## Verify
 
@@ -174,38 +125,32 @@ Restart the V2 service:
 opencode2 service restart
 ```
 
-From a project where the plugin should be active, verify that it loaded:
+From a project where the plugin should be active, check the loaded plugins:
 
 ```sh
 opencode2 api get "/api/plugin?location[directory]=$(pwd)"
 ```
 
-For a deployed package, the response should contain `github.learning_skills`.
-When running from this checkout, it should instead contain `local.learning_skills`
-with a local source. Start OpenCode in that project and run `/learn-status` to
-check the agents, commands, paths, pending proposals, and recent reviews.
+A deployed package should appear as `github.learning_skills`. When OpenCode runs from this checkout, it should instead appear as `local.learning_skills` with a local source.
+
+Start OpenCode in that project and run `/learn-status` to inspect the agents, commands, paths, pending proposals, and recent reviews.
 
 For loading failures, inspect the service log:
 
 ```sh
-grep 'learning_skills\|opencode-learning' ~/.local/share/opencode/log/opencode.log | tail -n 50
+grep 'learning_skills\|opencode-learning' ${HOME}/.local/share/opencode/log/opencode.log | tail -n 50
 ```
 
 ## Git deployment
 
-The global Git installation uses the package export, not the project-local
-`.opencode/` harness. After changing source or package metadata:
+The global Git installation uses the package export, not the project-local `.opencode/` harness. After changing source or package metadata:
 
 1. Run the developer checks below.
 2. Commit and push the change.
-3. Run `/deploy` from this repository. It runs the native targeted
-   `opencode2 plugin check` and `opencode2 plugin update` commands.
-4. Verify the target location with `POST /api/plugin/await-activation`, then
-   inspect `GET /api/plugin` for the active package revision.
+3. Run `/deploy` from this repository. It runs the native targeted `opencode2 plugin check` and `opencode2 plugin update` commands.
+4. Verify the target location with `POST /api/plugin/await-activation`, then inspect `GET /api/plugin` for the active package revision.
 
-The native updater refreshes the package and notifies active locations to
-reload it. Do not delete package caches manually or use service status as a
-plugin-readiness check.
+The native updater refreshes the package and notifies active locations to reload it. Do not delete package caches manually or use service status as a plugin-readiness check.
 
 ## Developer checks
 
@@ -233,14 +178,11 @@ npm run check:knip
 
 ## How it works
 
-The plugin records user corrections and non-learning tool activity only for
-root foreground sessions. Experience accumulates across executions until it
-reaches the configured score threshold and contains a meaningful learning
-signal: a post-response user correction, a recovery, or a multi-step verified
-workflow. Automatic review runs only after a successful execution and is
-started only when the accumulated evidence independently qualifies. Each review
-consumes its evidence batch, so later reviews require fresh learning signals.
-A qualifying experience follows this flow:
+The plugin records user corrections and non-learning tool activity only for root foreground sessions. Evidence accumulates across executions until it both reaches the configured score threshold and contains a qualifying learning signal.
+
+Automatic review runs only after a successful execution. Each review consumes its evidence batch, so another automatic review requires fresh learning signals.
+
+A qualifying batch follows this flow:
 
 ```text
 successful foreground execution
@@ -252,22 +194,18 @@ successful foreground execution
   -> staged proposal or automatic project update
 ```
 
-The default `suggest` mode stages accepted proposals for explicit approval.
-`auto` applies validated project changes immediately. Neither mode publishes a
-skill globally. Global publication only occurs through `/learn-promote` and its
-permission prompt.
+The default `suggest` mode stages accepted proposals for explicit approval. `auto` applies validated project changes immediately. Neither mode publishes skills globally. Global publication only occurs through `/learn-promote` and its permission prompt.
 
-The writer only creates new plugin-owned skills or patches existing
-plugin-owned skills. Patches require the current SHA-256. Supporting file paths
-must stay inside the skill directory, and existing supporting files are not
-overwritten.
+The writer creates only new plugin-owned skills or patches existing plugin-owned skills. Patches require the current SHA-256. Supporting file paths must stay inside the skill directory, and existing supporting files are not overwritten.
 
 ### Scoring
 
-Automatic review triggers when the accumulated score reaches `scoreThreshold`
-and at least one strong closed-loop signal is present: an incorporated
-correction, a confirmed recovery, or a repeated verified workflow. The score
-uses capped closed-loop features rather than raw activity volume:
+Automatic review requires both conditions below:
+
+- the accumulated score reaches `scoreThreshold`;
+- at least one strong closed-loop signal is present: an incorporated correction, a confirmed recovery, or a repeated verified workflow.
+
+The score uses capped closed-loop features rather than raw activity volume:
 
 ```text
 C = min(incorporated corrections, 1)
@@ -280,87 +218,54 @@ D = min(distinct tool categories, 3)
 score = 12*C + 8*R + 8*W + 2*V + 1*F + 1*D
 ```
 
-Automatic review triggers at `score >= 12` with at least one correction,
-recovery, or verified-workflow signal. Raw tool calls, skill loads, failed
-checks, and keyword matches do NOT earn points by themselves; they remain
-available as reflector evidence.
+With the default configuration, automatic review triggers at `score >= 12` and still requires at least one correction, recovery, or verified-workflow signal. Raw tool calls, skill loads, failed checks, and keyword matches do not earn points by themselves; they remain available as reflector evidence.
 
-`/learn` forces the review and bypasses the score, signal, cadence, and
-duplicate-suppression checks. Failed and interrupted executions are kept for a
-later successful execution or an explicit `/learn`, but do not trigger an
-automatic review by themselves.
+`/learn` forces a review and bypasses the score, signal, cadence, and duplicate-suppression checks. Failed and interrupted executions are retained for a later successful execution or an explicit `/learn`, but they do not trigger automatic review by themselves.
 
 #### Closed-loop signals
 
-The trigger is ordinary deterministic plugin code; the reflector and validator
-agents run only after a batch qualifies. One concise example of each signal:
+The trigger is deterministic plugin code. The reflector and validator agents run only after an evidence batch qualifies.
 
-- **Explicit correction -> changed action -> successful completion.** A user
-  follows up with "No, patch the source file instead." The next successful turn
-  contains a successful edit of the source file.
-- **Failed operation -> materially changed equivalent retry -> success.** A
-  shell `npm test` run errors, then the same operation retried with a corrected
-  command succeeds within the next two non-inspection calls.
-- **Mutation -> recognized successful verification, repeated on another
-  successful turn.** A turn succeeds after a successful edit followed by a
-  successful `npm test`, and the same category/operation sequence recurs in
-  another successful turn.
+- **Explicit correction -> changed action -> successful completion.** A user follows up with "No, patch the source file instead." The next successful turn contains a successful edit of the source file.
+- **Failed operation -> materially changed equivalent retry -> success.** A shell `npm test` run errors, then the same operation retried with a corrected command succeeds within the next two non-inspection calls.
+- **Mutation -> recognized successful verification, repeated on another successful turn.** A turn succeeds after a successful edit followed by a successful `npm test`, and the same category/operation sequence recurs in another successful turn.
 
 #### Cadence and suppression
 
-- Workflow-only candidates (a repeated verified workflow with no correction or
-  recovery) wait for three successful turns after the previous automatic review
-  before being reviewed.
-- Evidence accumulates while a candidate waits; the deferred batch is not
-  consumed, so new signals merge into it.
+- Workflow-only candidates with no correction or recovery wait for three successful turns after the previous automatic review before another review.
+- Evidence continues to accumulate while a candidate waits, so new signals merge into the deferred batch.
 - Correction and recovery candidates bypass the workflow cadence gate.
-- Equivalent accepted or no-change fingerprints are not reviewed repeatedly in
-  the same session; a later candidate with the same fingerprint is retained but
-  not reflected until a new correction or recovery changes the fingerprint.
-- Each review consumes its evidence batch, so later reviews require fresh
-  learning signals.
+- Equivalent accepted or no-change fingerprints are not reviewed repeatedly in the same session. A later candidate with the same fingerprint is retained but not reflected until a new correction or recovery changes the fingerprint.
+- Each review consumes its evidence batch, so later reviews require fresh learning signals.
 
 ### Architecture and lifecycle
 
-The plugin uses V2 session context hooks to record the conversation tail and
-tool hooks to record tool outcomes. It resolves each root foreground session
-through `ctx.session.get()`, so project paths come from the session location
-rather than the service process directory. Child sessions and the plugin's
-internal reviewer sessions are excluded.
+The plugin uses V2 session context hooks to record the conversation tail and tool hooks to record tool outcomes. It resolves each root foreground session through `ctx.session.get()`, so project paths come from the session location rather than the service process directory. Child sessions and the plugin's internal reviewer sessions are excluded.
 
-Reflector and validator work runs in dedicated sessions with restricted
-structured callback tools. Their output is checked before any write. The TUI
-addon removes marked reviewer sessions after every terminal outcome and sweeps
-inactive marked reviewer sessions at startup; without a TUI, those sessions
-remain durable. Skill changes use the native skill reload capability, so
-accepted changes become available without a service restart.
+Reflector and validator work runs in dedicated sessions with restricted structured callback tools. Their output is checked before any write.
 
-Automatic completion detection uses the public event stream. That stream is
-volatile by contract, so disconnected events are not replayed. Automatic
-reviews are considered on successful terminal events, while `/learn` marks the
-current session for review when its next terminal event is observed.
+The TUI addon removes marked reviewer sessions after every terminal outcome and sweeps inactive marked reviewer sessions at startup. Without a TUI, those sessions remain durable. Accepted skill changes use the native skill reload capability, so they become available without a service restart.
+
+Automatic completion detection uses the public event stream. That stream is volatile by contract, so disconnected events are not replayed. Automatic reviews are considered on successful terminal events. `/learn` marks the current session for review when its next terminal event is observed.
 
 ## Project data
 
-Every foreground project has separate storage:
+Each foreground project has separate storage:
 
 ```text
 <project>/.opencode/skills/       learned skills
 <project>/.opencode/.learning/    proposals, telemetry, archives, curator state
 ```
 
-Add `.opencode/.learning/` to the project's ignore file if runtime state should
-not be committed. Learned skills under `.opencode/skills/` can be reviewed and
-committed with the project.
+Add `.opencode/.learning/` to the project's ignore file if runtime state should not be committed. Learned skills under `.opencode/skills/` can be reviewed and committed with the project.
 
 Promotion copies an owned project skill to:
 
 ```text
-~/.config/opencode/skills/
+${HOME}/.config/opencode/skills/
 ```
 
-It refuses missing or non-owned skills and does not replace an existing global
-skill.
+It refuses missing or non-owned skills and does not replace an existing global skill.
 
 ## Options
 
@@ -387,12 +292,10 @@ skill.
 
 ## Remove
 
-Remove the plugin entry and three learning permission rules from your
-`opencode.json(c)`, then restart:
+Remove the plugin entry and three learning permission rules from your `opencode.json(c)`, then restart the service:
 
 ```sh
 opencode2 service restart
 ```
 
-This leaves learned skills, runtime state, archives, and promoted global skills
-untouched.
+This leaves learned skills, runtime state, archives, and promoted global skills untouched.
