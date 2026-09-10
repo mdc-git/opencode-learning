@@ -138,7 +138,7 @@ function indexAfterCursor(messages: readonly unknown[], cursor?: string): number
   }
 
   const found = messages.findIndex((message) => messageId(message) === cursor)
-  return found < 0 ? 0 : found + 1
+  return found === -1 ? 0 : found + 1
 }
 
 function lookbackStart(messages: readonly unknown[], fresh: number, turns: number): number {
