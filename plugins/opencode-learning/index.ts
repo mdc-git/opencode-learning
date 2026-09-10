@@ -128,29 +128,35 @@ function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: Session
   })
 }
 
+function eligibleContext(runtime: Runtime, sessionRef: SessionRef) {
+  return runtime.ctx.session.get(sessionRef).pipe(
+    Effect.flatMap((session) =>
+      session.parentID === undefined
+        ? runtime.ctx.session.context(sessionRef)
+        : Effect.succeed(undefined)
+    ),
+    Effect.map((messages) =>
+      messages === undefined || isLearningCommand(latestUserText(messages)) ? undefined : messages
+    )
+  )
+}
+
 function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {
-  return Effect.gen(function* () {
-    const session = yield* runtime.ctx.session.get(sessionRef).pipe(Effect.orDie)
-    if (session.parentID !== undefined) {
-      return
-    }
+  return eligibleContext(runtime, sessionRef).pipe(
+    Effect.flatMap((messages) => {
+      if (messages === undefined) {
+        return Effect.void
+      }
 
-    const messages = yield* runtime.ctx.session.context(sessionRef).pipe(Effect.orDie)
-    if (isLearningCommand(latestUserText(messages))) {
-      return
-    }
-
-    const state = stateFor(runtime.states, sessionRef.sessionID)
-    state.successfulTurnsSinceReview += 1
-    if (
-      state.successfulTurnsSinceReview < SUCCESSFUL_TURNS_PER_REVIEW ||
-      state.reviewFiber !== undefined
-    ) {
-      return
-    }
-
-    yield* startAutomatic(runtime, sessionRef, state)
-  }).pipe(Effect.catchCause(() => Effect.void))
+      const state = stateFor(runtime.states, sessionRef.sessionID)
+      state.successfulTurnsSinceReview += 1
+      const isDue = state.successfulTurnsSinceReview >= SUCCESSFUL_TURNS_PER_REVIEW
+      return isDue && state.reviewFiber === undefined
+        ? startAutomatic(runtime, sessionRef, state)
+        : Effect.void
+    }),
+    Effect.catchCause(() => Effect.void)
+  )
 }
 
 function deleteSession(runtime: Runtime, sessionId: SessionId) {
@@ -220,12 +226,19 @@ function manualReview(
   })
 }
 
+function reviewFibers(states: Map<SessionId, SessionState>): ReviewFiber[] {
+  const fibers: ReviewFiber[] = []
+  for (const state of states.values()) {
+    if (state.reviewFiber !== undefined) {
+      fibers.push(state.reviewFiber)
+    }
+  }
+
+  return fibers
+}
+
 function shutdown(states: Map<SessionId, SessionState>) {
-  const fibers = states
-    .values()
-    .flatMap((state) => (state.reviewFiber === undefined ? [] : [state.reviewFiber]))
-    .toArray()
-  return Fiber.interruptAll(fibers).pipe(
+  return Fiber.interruptAll(reviewFibers(states)).pipe(
     Effect.ensuring(
       Effect.sync(() => {
         states.clear()
