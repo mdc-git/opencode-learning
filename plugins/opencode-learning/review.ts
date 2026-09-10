@@ -124,7 +124,8 @@ function reflect(
     const reflection = decodeReflection(generated.text)
     yield* activity(options, sessionRef, {
       kind: 'reviewer-result',
-      message: reflection.kind === 'none' ? reflection.reason : `${reflection.kind} ${reflection.skillId}`
+      message:
+        reflection.kind === 'none' ? reflection.reason : `${reflection.kind} ${reflection.skillId}`
     })
     return { reflection, evidence, candidates, all, model: generated.model, options }
   })

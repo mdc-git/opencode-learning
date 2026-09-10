@@ -70,10 +70,7 @@ async function withArgument(
 function detailText(detail: ProposalDetail): string {
   const files = detail.files.length === 0 ? 'none' : detail.files.join('\n')
   const manifest = detail.manifest
-    .map(
-      (file) =>
-        `${file.path} ${file.size} ${file.hash}${file.executable ? ' executable' : ''}`
-    )
+    .map((file) => `${file.path} ${file.size} ${file.hash}${file.executable ? ' executable' : ''}`)
     .join('\n')
   return [
     `${detail.kind} ${detail.skillId}`,

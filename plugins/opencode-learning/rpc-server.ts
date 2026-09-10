@@ -17,13 +17,15 @@ function sessionRef(sessionId: string): SessionRef {
 
 function assertRoot(ctx: Plugin.Context, sessionId: string) {
   const ref = sessionRef(sessionId)
-  return ctx.session.get(ref).pipe(
-    Effect.flatMap((session) =>
-      session.parentID === undefined
-        ? Effect.succeed(ref)
-        : Effect.fail(new Error('learning actions are root-session-only'))
+  return ctx.session
+    .get(ref)
+    .pipe(
+      Effect.flatMap((session) =>
+        session.parentID === undefined
+          ? Effect.succeed(ref)
+          : Effect.fail(new Error('learning actions are root-session-only'))
+      )
     )
-  )
 }
 
 function reviewResponse(result: ReviewResult) {
