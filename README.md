@@ -2,7 +2,7 @@
 
 `opencode-learning` is an Effect-native OpenCode V2 plugin that extracts one reusable procedural skill from root-session activity and stages every learned change for explicit approval.
 
-The plugin ID is `github.learning_skills`. The package root exports `index.ts`, which re-exports the plugin implementation from `plugins/opencode-learning/index.ts`. Published package contents include `index.ts` and `plugins/`.
+The plugin ID is `github.learning_skills`. The package root exports the server plugin and `./tui` exports the terminal integration.
 
 ## Installation
 
@@ -15,7 +15,7 @@ Configure the GitHub plugin in the OpenCode configuration used by the server:
 }
 ```
 
-OpenCode resolves the repository package export and its declared runtime dependencies.
+OpenCode loads the package's `./tui` entrypoint for the connected terminal, so the server workflow and terminal presentation come from the same package.
 
 ## Local development
 
@@ -28,18 +28,18 @@ The repository root is the local plugin entrypoint. `.opencode/opencode.jsonc` d
 }
 ```
 
-Run OpenCode from the repository root after installing dependencies. The active plugin keeps the canonical `github.learning_skills` ID regardless of source.
+Run OpenCode from the repository root after installing dependencies. The active server plugin keeps the canonical `github.learning_skills` ID regardless of source.
 
 ## Learning loop
 
-Automatic review runs after every three successful primary root turns. The plugin keeps cadence state only in memory. Child sessions, learning commands, transient reviewer generation, and passive synthetic messages do not count as primary turns.
+Automatic review runs after every three successful primary root turns. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
 
 A review captures a fixed root-session history window, builds bounded evidence, selects up to five plugin-owned project skill candidates using explicit references and token overlap, and performs two transient model calls:
 
 ```text
 3 successful primary root turns
-  -> reflector
-  -> deterministic materialization and validation
+  -> reviewer
+  -> deterministic materialization
   -> validator
   -> pending proposal
   -> explicit /learn-approve
@@ -47,21 +47,25 @@ A review captures a fixed root-session history window, builds bounded evidence, 
   -> native skill reload
 ```
 
-The reflector and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the exact proposed artifact and the evidence used for reflection. A rejected or empty review consumes that review interval.
+The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the exact proposed artifact and the evidence used for review. A rejected or empty review consumes that review interval.
 
-Manual `/learn` runs the same review pipeline synchronously over the root session from its beginning through a fixed end cursor.
+Manual `/learn` runs the same review pipeline synchronously over the current root session.
 
-## Commands
+## Terminal interaction
 
-All commands are root-session-only:
+The TUI plugin owns all learning presentation. It subscribes to the server plugin's typed RPC activity event and shows native toasts for reviewer start/result, validator start/result, pending-limit notices, and newly staged proposals.
+
+All learning commands require an open root session:
 
 - `/learn` — run a synchronous review of the current root session.
-- `/learn-pending [id]` — list pending proposals or inspect one exact proposal UUID.
+- `/learn-pending [id]` — open the pending proposal selector or inspect one exact proposal UUID.
 - `/learn-approve <id>` — apply one exact pending proposal to the project skill tree and reload skills.
 - `/learn-reject <id>` — remove one exact pending proposal directory.
 - `/learn-promote <skill-id>` — replace the global copy of one plugin-owned project skill and reload skills.
 
-Command results and automatic notices are passive synthetic session messages with `resume: false`.
+`/learn-pending` shows pending proposals as a selectable list. Selecting a proposal opens its metadata, stale status, file changes, manifest, evidence, and staged `SKILL.md` in a detail dialog.
+
+The terminal calls the server through the connected OpenCode client, so server-owned state and actions remain correct when the TUI and server run on different machines.
 
 ## Filesystem state
 
@@ -102,7 +106,7 @@ metadata:
   opencode-learning/owner: 'true'
 ```
 
-A valid skill tree contains a valid `SKILL.md`, real directories and regular files only, no symlinks, no file larger than 25 MiB, and no more than 100 MiB total. Reflector-generated supporting files are limited to 1 MiB each and 10 MiB generated content total.
+A valid skill tree contains a valid `SKILL.md`, real directories and regular files only, no symlinks, no file larger than 25 MiB, and no more than 100 MiB total. Reviewer-generated supporting files are limited to 1 MiB each and 10 MiB generated content total.
 
 Patch proposals represent the complete desired skill directory. Their whole-tree revision covers each sorted relative path, executable bit, and exact file bytes. Approval refuses a patch when the current project skill no longer matches its expected revision.
 

@@ -1,7 +1,7 @@
 import { Plugin } from '@opencode/plugin/effect'
 import { Effect, Fiber, Stream } from 'effect'
-import { registerCommands } from './commands.ts'
-import { runReview, type ReviewResult } from './review.ts'
+import { runReview, type ReviewActivity, type ReviewResult } from './review.ts'
+import { registerLearningRpc } from './rpc-server.ts'
 import { createStore, PENDING_LIMIT, type Store } from './store.ts'
 
 const SUCCESSFUL_TURNS_PER_REVIEW = 3
@@ -19,6 +19,7 @@ type Runtime = {
   ctx: Plugin.Context
   store: Store
   states: Map<SessionId, SessionState>
+  activity: ReviewActivity
 }
 
 function stateFor(states: Map<SessionId, SessionState>, sessionId: SessionId): SessionState {
@@ -48,58 +49,33 @@ function cursorBeforeLatestUser(messages: readonly unknown[]): string | undefine
   return typeof previous?.id === 'string' ? previous.id : undefined
 }
 
-function latestUserText(messages: readonly unknown[]): string {
-  const message = messages.findLast((item) => record(item)?.type === 'user')
-  const text = record(message)?.text
-  return typeof text === 'string' ? text : ''
-}
-
-function isLearningCommand(text: string): boolean {
-  return /^\/learn(?:\s|$|-)/v.test(text.trim())
-}
-
-function passive(ctx: Plugin.Context, sessionRef: SessionRef, text: string) {
-  const input = { ...sessionRef, text, resume: false }
-  return ctx.session.synthetic(input).pipe(
-    Effect.asVoid,
-    Effect.catch(() => Effect.void)
-  )
-}
-
-function capWarning(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+function pendingLimit(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   if (state.pendingLimitNotified) {
     return Effect.void
   }
 
   state.pendingLimitNotified = true
-  return passive(runtime.ctx, sessionRef, 'pending proposal limit reached')
+  return runtime.activity({
+    kind: 'pending-limit',
+    sessionId: sessionRef.sessionID,
+    message: 'pending proposal limit reached'
+  })
 }
 
-function finishAutomatic(
-  runtime: Runtime,
-  sessionRef: SessionRef,
-  state: SessionState,
-  result: ReviewResult
-) {
+function finishAutomatic(state: SessionState, result: ReviewResult) {
   if (result.endCursor !== undefined) {
     state.reviewCursor = result.endCursor
   }
 
-  if (result.kind === 'cap') {
-    return capWarning(runtime, sessionRef, state)
-  }
-
-  if (result.kind !== 'staged') {
-    return Effect.void
-  }
-
-  const text = `${result.id} ${result.proposal.kind} ${result.proposal.skillId}\n/learn-pending ${result.id}`
-  return passive(runtime.ctx, sessionRef, text)
+  return Effect.void
 }
 
 function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
-  return runReview(runtime.ctx, runtime.store, sessionRef, state.reviewCursor).pipe(
-    Effect.flatMap((result) => finishAutomatic(runtime, sessionRef, state, result)),
+  return runReview(runtime.ctx, runtime.store, sessionRef, {
+    startAfter: state.reviewCursor,
+    activity: runtime.activity
+  }).pipe(
+    Effect.flatMap((result) => finishAutomatic(state, result)),
     Effect.catch(() => Effect.void),
     Effect.ensuring(
       Effect.sync(() => {
@@ -120,7 +96,7 @@ function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: Session
     }
 
     if (pending >= PENDING_LIMIT) {
-      yield* capWarning(runtime, sessionRef, state)
+      yield* pendingLimit(runtime, sessionRef, state)
       return
     }
 
@@ -129,16 +105,15 @@ function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: Session
 }
 
 function eligibleContext(runtime: Runtime, sessionRef: SessionRef) {
-  return runtime.ctx.session.get(sessionRef).pipe(
-    Effect.flatMap((session) =>
-      session.parentID === undefined
-        ? runtime.ctx.session.context(sessionRef)
-        : Effect.succeed(undefined)
-    ),
-    Effect.map((messages) =>
-      messages === undefined || isLearningCommand(latestUserText(messages)) ? undefined : messages
+  return runtime.ctx.session
+    .get(sessionRef)
+    .pipe(
+      Effect.flatMap((session) =>
+        session.parentID === undefined
+          ? runtime.ctx.session.context(sessionRef)
+          : Effect.succeed(undefined)
+      )
     )
-  )
 }
 
 function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {
@@ -201,14 +176,11 @@ function manualReview(
   }
 
   return Effect.gen(function* () {
-    const pending = yield* Effect.promise(async () => runtime.store.pendingCount())
-    if (pending >= PENDING_LIMIT) {
-      return { kind: 'cap' }
-    }
-
     state.pendingLimitNotified = false
     state.successfulTurnsSinceReview = 0
-    const review = runReview(runtime.ctx, runtime.store, sessionRef).pipe(
+    const review = runReview(runtime.ctx, runtime.store, sessionRef, {
+      activity: runtime.activity
+    }).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           state.reviewFiber = undefined
@@ -254,12 +226,15 @@ export default Plugin.define({
       const runtime: Runtime = {
         ctx,
         store: createStore(ctx.location.directory),
-        states: new Map()
+        states: new Map(),
+        activity: () => Effect.void
       }
       yield* baseline(runtime)
-      yield* registerCommands(ctx, runtime.store, (sessionRef) =>
+      const rpc = yield* registerLearningRpc(ctx, runtime.store, (sessionRef) =>
         manualReview(runtime, sessionRef)
       ).pipe(Effect.orDie)
+      runtime.activity = (event) =>
+        rpc.events.emit('activity', event).pipe(Effect.catch(() => Effect.void))
       yield* ctx.event.subscribe().pipe(
         Stream.runForEach((event) => {
           if (event.type === 'session.execution.succeeded') {
@@ -274,6 +249,7 @@ export default Plugin.define({
         }),
         Effect.forkScoped
       )
+      yield* Effect.addFinalizer(() => rpc.dispose)
       yield* Effect.addFinalizer(() => shutdown(runtime.states))
     })
 })
