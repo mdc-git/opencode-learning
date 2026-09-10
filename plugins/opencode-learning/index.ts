@@ -98,7 +98,7 @@ function finishAutomatic(
 }
 
 function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
-  return runReview(runtime.ctx, runtime.store, sessionRef.sessionID, state.reviewCursor).pipe(
+  return runReview(runtime.ctx, runtime.store, sessionRef, state.reviewCursor).pipe(
     Effect.flatMap((result) => finishAutomatic(runtime, sessionRef, state, result)),
     Effect.catch(() => Effect.void),
     Effect.ensuring(
@@ -193,9 +193,9 @@ function baseline(runtime: Runtime) {
 
 function manualReview(
   runtime: Runtime,
-  sessionId: SessionId
+  sessionRef: SessionRef
 ): Effect.Effect<ReviewResult, unknown> {
-  const state = stateFor(runtime.states, sessionId)
+  const state = stateFor(runtime.states, sessionRef.sessionID)
   if (state.reviewFiber !== undefined) {
     return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })
   }
@@ -208,7 +208,7 @@ function manualReview(
 
     state.pendingLimitNotified = false
     state.successfulTurnsSinceReview = 0
-    const review = runReview(runtime.ctx, runtime.store, sessionId).pipe(
+    const review = runReview(runtime.ctx, runtime.store, sessionRef).pipe(
       Effect.ensuring(
         Effect.sync(() => {
           state.reviewFiber = undefined
@@ -257,8 +257,8 @@ export default Plugin.define({
         states: new Map()
       }
       yield* baseline(runtime)
-      yield* registerCommands(ctx, runtime.store, (sessionId) =>
-        manualReview(runtime, sessionId)
+      yield* registerCommands(ctx, runtime.store, (sessionRef) =>
+        manualReview(runtime, sessionRef)
       ).pipe(Effect.orDie)
       yield* ctx.event.subscribe().pipe(
         Stream.runForEach((event) => {
