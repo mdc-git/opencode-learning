@@ -89,7 +89,7 @@ function hasCollectedPath(key: string, item: unknown, output: Set<string>): bool
 }
 
 function collectPathEntry(key: string, item: unknown, output: Set<string>): void {
-  if (hasCollectedPath(key, item, output) || item === undefined) {
+  if (item === undefined || hasCollectedPath(key, item, output)) {
     return
   }
 

@@ -11,7 +11,7 @@ import {
   type Candidate
 } from './candidates.ts'
 import { boundPacket, captureEvidence, packetBytes, type Evidence } from './evidence.ts'
-import type { ProposalMetadata } from './proposal.ts'
+import { isSkillId, type ProposalMetadata } from './proposal.ts'
 import { isolatedGenerate } from './review-generate.ts'
 import { proposalFor, validatorPacket } from './review-packet.ts'
 import {
@@ -26,7 +26,6 @@ import { materializeSkill } from './skill-files.ts'
 import { scanSkillTree } from './skill-tree.ts'
 import { PENDING_LIMIT, type Store } from './store.ts'
 
-const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
 const REFLECTOR =
   'Return exactly one JSON reflection. Choose only a reusable procedure supported by evidence; return none when none is justified.'
 const VALIDATOR =
@@ -42,12 +41,8 @@ type ReflectionResult = {
   model: string
   options: ReviewOptions
 }
-type Materialized = Awaited<ReturnType<typeof materializeSkill>>
 export type ReviewActivity = (event: LearningActivity) => Effect.Effect<void, unknown>
-export type ReviewOptions = {
-  startAfter?: string
-  activity: ReviewActivity
-}
+export type ReviewOptions = { startAfter?: string; activity: ReviewActivity }
 type FinalizeInput = {
   ctx: Plugin.Context
   store: Store
@@ -56,8 +51,7 @@ type FinalizeInput = {
   reflection: ActiveReflection
   candidate?: Candidate
   id: string
-  materialized: Materialized
-  options: ReviewOptions
+  materialized: Awaited<ReturnType<typeof materializeSkill>>
 }
 
 export type ReviewResult =
@@ -72,10 +66,10 @@ function reviewerPrompt(instruction: string, packet: unknown): string {
 
 function activity(
   options: ReviewOptions,
-  sessionRef: SessionRef,
+  ref: SessionRef,
   event: Omit<LearningActivity, 'sessionId'>
 ) {
-  return options.activity({ ...event, sessionId: sessionRef.sessionID })
+  return options.activity({ ...event, sessionId: ref.sessionID })
 }
 
 function reflectionCapture(all: Candidate[], startAfter?: string) {
@@ -130,7 +124,10 @@ function reflect(
     const reflection = decodeReflection(generated.text)
     yield* activity(options, sessionRef, {
       kind: 'reviewer-result',
-      message: reflection.kind === 'none' ? reflection.reason : `${reflection.kind} ${reflection.skillId}`
+      message:
+        reflection.kind === 'none'
+          ? reflection.reason
+          : `${reflection.kind} ${reflection.skillId}`
     })
     return { reflection, evidence, candidates, all, model: generated.model, options }
   })
@@ -147,20 +144,14 @@ async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Pr
   }
 }
 
-function validateReflection(reflection: ActiveReflection): void {
-  if (!SKILL_ID.test(reflection.skillId)) {
-    throw new Error('invalid reflected skill id')
-  }
-}
-
 function validateMaterialized(input: FinalizeInput): Effect.Effect<Validation, unknown> {
   const packet = validatorPacket(input.reflection, input.result, input.materialized.scan.files)
   return Effect.gen(function* () {
-    yield* activity(input.options, input.sessionRef, {
+    yield* activity(input.result.options, input.sessionRef, {
       kind: 'validator-started',
       message: `validating ${input.reflection.skillId}`
     })
-    const generated = yield* isolatedGenerate(input.ctx, input.sessionRef, (_messages, maxBytes) => {
+    const generated = yield* isolatedGenerate(input.ctx, input.sessionRef, (_, maxBytes) => {
       const prompt = reviewerPrompt(VALIDATOR, packet)
       if (packetBytes(prompt) > maxBytes) {
         throw new Error('validator request exceeds model input limit')
@@ -173,7 +164,7 @@ function validateMaterialized(input: FinalizeInput): Effect.Effect<Validation, u
     }
 
     const validation = decodeValidation(generated.text)
-    yield* activity(input.options, input.sessionRef, {
+    yield* activity(input.result.options, input.sessionRef, {
       kind: 'validator-result',
       message: `${validation.accept ? 'accepted' : 'rejected'}: ${validation.reason}`
     })
@@ -194,7 +185,7 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
 
     const pending = yield* Effect.promise(async () => input.store.pendingCount())
     if (pending >= PENDING_LIMIT) {
-      yield* activity(input.options, input.sessionRef, {
+      yield* activity(input.result.options, input.sessionRef, {
         kind: 'pending-limit',
         message: 'pending proposal limit reached'
       })
@@ -202,8 +193,9 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
     }
 
     const proposal = proposalFor(input.reflection, input.result.evidence, input.candidate)
-    yield* Effect.promise(async () => input.store.stage(proposal, input.materialized.root, input.id))
-    yield* activity(input.options, input.sessionRef, {
+    const root = input.materialized.root
+    yield* Effect.promise(async () => input.store.stage(proposal, root, input.id))
+    yield* activity(input.result.options, input.sessionRef, {
       kind: 'proposal-staged',
       message: `new ${proposal.kind} proposal for ${proposal.skillId}`
     })
@@ -223,8 +215,6 @@ function materializeProposal(
   candidate?: Candidate
 ) {
   const id = crypto.randomUUID()
-  const candidateRoot =
-    candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
   return Effect.promise(async () =>
     materializeSkill({
       project: store.project,
@@ -233,7 +223,10 @@ function materializeProposal(
       skill: reflection.skill,
       authorizedPaths: result.evidence.authorizedPaths,
       ...(candidate !== undefined && {
-        candidate: { root: candidateRoot ?? '', manifest: candidate.manifest }
+        candidate: {
+          root: path.join(store.projectSkills, candidate.id),
+          manifest: candidate.manifest
+        }
       })
     })
   ).pipe(Effect.map((materialized) => ({ id, materialized })))
@@ -255,7 +248,10 @@ function activeReflection(
   }
 
   return Effect.gen(function* () {
-    validateReflection(reflection)
+    if (!isSkillId(reflection.skillId)) {
+      throw new Error('invalid reflected skill id')
+    }
+
     const candidate = patchCandidate(reflection, result.candidates)
     if (reflection.kind === 'create') {
       yield* Effect.promise(async () => store.assertCreateAvailable(reflection.skillId))
@@ -271,8 +267,7 @@ function activeReflection(
       reflection,
       candidate,
       id,
-      materialized,
-      options: result.options
+      materialized
     })
     const cleanup = Effect.promise(async () =>
       fs.rm(materialized.root, { recursive: true, force: true })

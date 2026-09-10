@@ -1,9 +1,9 @@
 import { Rpc } from '@opencode/plugin/rpc'
-import { Schema } from 'effect'
+import { z } from 'zod'
 
-const proposalKindSchema = Schema.Literals(['create', 'patch'])
-const reviewStatusSchema = Schema.Literals(['none', 'rejected', 'cap', 'staged'])
-const activityKindSchema = Schema.Literals([
+const proposalKindSchema = z.enum(['create', 'patch'])
+const reviewStatusSchema = z.enum(['none', 'rejected', 'cap', 'staged'])
+const activityKindSchema = z.enum([
   'reviewer-started',
   'reviewer-result',
   'validator-started',
@@ -12,60 +12,74 @@ const activityKindSchema = Schema.Literals([
   'pending-limit'
 ])
 
-const pendingProposalSchema = Schema.Struct({
-  id: Schema.String,
-  kind: proposalKindSchema,
-  skillId: Schema.String,
-  reason: Schema.String,
-  invalid: Schema.Boolean
-})
-const fileManifestSchema = Schema.Struct({
-  path: Schema.String,
-  size: Schema.Number,
-  executable: Schema.Boolean,
-  hash: Schema.String
-})
-const pendingDetailSchema = Schema.Struct({
-  id: Schema.String,
-  kind: proposalKindSchema,
-  skillId: Schema.String,
-  reason: Schema.String,
-  invalid: Schema.Boolean,
-  stale: Schema.Boolean,
-  files: Schema.Array(Schema.String),
-  manifest: Schema.Array(fileManifestSchema),
-  markdown: Schema.String,
-  evidence: Schema.String
-})
-const reviewResultSchema = Schema.Struct({
-  status: reviewStatusSchema,
-  message: Schema.String,
-  proposalId: Schema.String,
-  skillId: Schema.String
-})
-const activitySchema = Schema.Struct({
-  kind: activityKindSchema,
-  sessionId: Schema.String,
-  message: Schema.String
-})
-const sessionInput = Schema.Struct({ sessionId: Schema.String })
-const proposalInput = Schema.Struct({ sessionId: Schema.String, id: Schema.String })
-const promoteInput = Schema.Struct({ sessionId: Schema.String, skillId: Schema.String })
+const pendingProposalSchema = z
+  .object({
+    id: z.string(),
+    kind: proposalKindSchema,
+    skillId: z.string(),
+    reason: z.string(),
+    invalid: z.boolean()
+  })
+  .strict()
+const fileManifestSchema = z
+  .object({
+    path: z.string(),
+    size: z.number(),
+    executable: z.boolean(),
+    hash: z.string()
+  })
+  .strict()
+const pendingDetailSchema = z
+  .object({
+    id: z.string(),
+    kind: proposalKindSchema,
+    skillId: z.string(),
+    reason: z.string(),
+    invalid: z.boolean(),
+    stale: z.boolean(),
+    files: z.array(z.string()),
+    manifest: z.array(fileManifestSchema),
+    markdown: z.string(),
+    evidence: z.string()
+  })
+  .strict()
+const reviewResultSchema = z
+  .object({
+    status: reviewStatusSchema,
+    message: z.string(),
+    proposalId: z.string(),
+    skillId: z.string()
+  })
+  .strict()
+const activitySchema = z
+  .object({
+    kind: activityKindSchema,
+    sessionId: z.string(),
+    message: z.string()
+  })
+  .strict()
+const sessionInput = z.object({ sessionId: z.string() }).strict()
+const proposalInput = z.object({ sessionId: z.string(), id: z.string() }).strict()
+const promoteInput = z.object({ sessionId: z.string(), skillId: z.string() }).strict()
+const emptyOutput = z.object({}).strict()
+const failureSchema = z.object({ message: z.string() }).strict()
+const methodErrors = { failure: failureSchema }
 
-export type LearningActivity = typeof activitySchema.Type
+export type LearningActivity = z.infer<typeof activitySchema>
 
-export const LearningRpc = Rpc.define({
+export const learningRpc = Rpc.define({
   id: 'github.learning_skills',
   methods: {
-    review: { input: sessionInput, output: reviewResultSchema },
-    pending: { input: sessionInput, output: Schema.Array(pendingProposalSchema) },
-    proposal: { input: proposalInput, output: pendingDetailSchema },
+    review: { input: sessionInput, output: reviewResultSchema, errors: methodErrors },
+    pending: { input: sessionInput, output: z.array(pendingProposalSchema), errors: methodErrors },
+    proposal: { input: proposalInput, output: pendingDetailSchema, errors: methodErrors },
     approve: {
       input: proposalInput,
-      output: Schema.Struct({ skillId: Schema.String })
+      output: z.object({ skillId: z.string() }).strict(),
+      errors: methodErrors
     },
-    reject: { input: proposalInput, output: Schema.Struct({}) },
-    promote: { input: promoteInput, output: Schema.Struct({}) }
+    reject: { input: proposalInput, output: emptyOutput, errors: methodErrors },
+    promote: { input: promoteInput, output: emptyOutput, errors: methodErrors }
   },
   events: {
     activity: { schema: activitySchema }

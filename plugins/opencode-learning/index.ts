@@ -88,7 +88,9 @@ function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: Sessio
 function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   return Effect.gen(function* () {
     state.successfulTurnsSinceReview = 0
-    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(Effect.orDie)
+    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(
+      Effect.orDie
+    )
     if (pending < PENDING_LIMIT) {
       state.pendingLimitNotified = false
     }
@@ -162,7 +164,10 @@ function baseline(runtime: Runtime) {
   })
 }
 
-function manualReview(runtime: Runtime, sessionRef: SessionRef): Effect.Effect<ReviewResult, unknown> {
+function manualReview(
+  runtime: Runtime,
+  sessionRef: SessionRef
+): Effect.Effect<ReviewResult, unknown> {
   const state = stateFor(runtime.states, sessionRef.sessionID)
   if (state.reviewFiber !== undefined) {
     return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })

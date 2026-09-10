@@ -52,7 +52,8 @@ async function serverUrl(server) {
 function isolatedEnvironment(root) {
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
+      ([name]) =>
+        !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
     )
   )
   return {
@@ -98,14 +99,18 @@ function delay(milliseconds) {
 }
 
 async function stopServer(server) {
-  if (server.exitCode !== null) return
+  if (server.exitCode !== null) {
+    return
+  }
 
   server.kill('SIGTERM')
   const closed = await Promise.race([
     once(server, 'close').then(() => true),
     delay(2000).then(() => false)
   ])
-  if (!closed) server.kill('SIGKILL')
+  if (!closed) {
+    server.kill('SIGKILL')
+  }
 }
 
 function locationQuery(project) {
@@ -125,20 +130,49 @@ async function snapshot(base, project) {
   }
 }
 
-async function waitForPlugin(base, project, diagnostics) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const current = await snapshot(base, project)
-    if (current.plugin?.state?.status === 'active') return current
-    await delay(100)
-  }
+function waitForPlugin(base, project, diagnostics) {
+  return new Promise((resolve, reject) => {
+    let lastSnapshot = { learningCommands: [] }
+    const finish = (timer, interval, result) => {
+      clearTimeout(timer)
+      clearInterval(interval)
+      result()
+    }
 
-  throw new Error(`learning plugin did not activate\nstderr=${diagnostics()}`)
+    const timer = setTimeout(() => {
+      finish(timer, interval, () =>
+        reject(
+          new Error(
+            `learning plugin did not activate\nstate=${JSON.stringify(lastSnapshot, null, 2)}\nstderr=${diagnostics()}`
+          )
+        )
+      )
+    }, 15_000)
+    const check = () => {
+      snapshot(base, project)
+        .then((current) => {
+          lastSnapshot = current
+          if (current.plugin?.state?.status === 'active') {
+            finish(timer, interval, () => resolve(current))
+          }
+        })
+        .catch((error) => {
+          finish(timer, interval, () => reject(error))
+        })
+    }
+
+    const interval = setInterval(check, 100)
+    check()
+  })
 }
 
 async function exercisePlugin(root, project) {
   await mkdir(project, { recursive: true })
   await mkdir(path.join(root, 'tmp'), { recursive: true })
-  await writeFile(path.join(project, 'opencode.jsonc'), `${JSON.stringify({ plugins: [repository] })}\n`)
+  await writeFile(
+    path.join(project, 'opencode.jsonc'),
+    `${JSON.stringify({ plugins: [repository] })}\n`
+  )
   const running = startServer(project, root)
   try {
     const base = await serverUrl(running.child)
@@ -155,12 +189,15 @@ async function exercisePlugin(root, project) {
   }
 }
 
-test('package-root server plugin activates without exposing learning commands as session commands', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
-  const project = path.join(root, 'project')
-  try {
-    assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
-  } finally {
-    await rm(root, { recursive: true, force: true })
+test(
+  'package-root server plugin activates without exposing learning commands as session commands',
+  async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
+    const project = path.join(root, 'project')
+    try {
+      assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   }
-})
+)

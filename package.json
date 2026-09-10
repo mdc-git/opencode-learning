@@ -29,7 +29,8 @@
   "dependencies": {
     "@opencode/plugin": "beta",
     "effect": "4.0.0-rc.112",
-    "yaml": "^2.8.1"
+    "yaml": "^2.8.1",
+    "zod": "^4.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

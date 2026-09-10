@@ -3,19 +3,25 @@ import path from 'node:path'
 import type { Plugin } from '@opencode/plugin/effect'
 import { Effect } from 'effect'
 import type { ReviewResult } from './review.ts'
-import { LearningRpc } from './rpc.ts'
+import { learningRpc } from './rpc.ts'
 import type { Store } from './store.ts'
 
 type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
+type SessionId = SessionRef['sessionID']
 type Learn = (sessionRef: SessionRef) => Effect.Effect<ReviewResult, unknown>
+const sessionIdKey = 'sessionID'
+
+function sessionRef(sessionId: string): SessionRef {
+  return { [sessionIdKey]: sessionId as SessionId }
+}
 
 function assertRoot(ctx: Plugin.Context, sessionId: string) {
-  const sessionRef: SessionRef = { sessionID: sessionId }
-  return ctx.session.get(sessionRef).pipe(
+  const ref = sessionRef(sessionId)
+  return ctx.session.get(ref).pipe(
     Effect.flatMap((session) =>
       session.parentID === undefined
-        ? Effect.succeed(sessionRef)
-        : Effect.fail(new Error('learning commands are root-session-only'))
+        ? Effect.succeed(ref)
+        : Effect.fail(new Error('learning actions are root-session-only'))
     )
   )
 }
@@ -82,36 +88,49 @@ function proposalDetail(store: Store, id: string) {
   })
 }
 
-function registerMethods(ctx: Plugin.Context, store: Store, learn: Learn) {
-  return {
-    review: ({ sessionId }: { sessionId: string }) =>
-      assertRoot(ctx, sessionId).pipe(
-        Effect.flatMap((sessionRef) => learn(sessionRef)),
-        Effect.map(reviewResponse)
-      ),
-    pending: ({ sessionId }: { sessionId: string }) =>
-      assertRoot(ctx, sessionId).pipe(Effect.flatMap(() => pendingSummary(store))),
-    proposal: ({ sessionId, id }: { sessionId: string; id: string }) =>
-      assertRoot(ctx, sessionId).pipe(Effect.flatMap(() => proposalDetail(store, id))),
-    approve: ({ sessionId, id }: { sessionId: string; id: string }) =>
-      assertRoot(ctx, sessionId).pipe(
-        Effect.flatMap(() => Effect.promise(async () => store.approve(id))),
-        Effect.flatMap((skillId) => ctx.skill.reload().pipe(Effect.as({ skillId })))
-      ),
-    reject: ({ sessionId, id }: { sessionId: string; id: string }) =>
-      assertRoot(ctx, sessionId).pipe(
-        Effect.flatMap(() => Effect.promise(async () => store.reject(id))),
-        Effect.as({})
-      ),
-    promote: ({ sessionId, skillId }: { sessionId: string; skillId: string }) =>
-      assertRoot(ctx, sessionId).pipe(
-        Effect.flatMap(() => Effect.promise(async () => store.promote(skillId))),
-        Effect.flatMap(() => ctx.skill.reload()),
-        Effect.as({})
-      )
-  }
+function mapFailure<Failure>(make: (message: string) => Failure) {
+  return Effect.mapError((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    return make(message)
+  })
 }
 
 export function registerLearningRpc(ctx: Plugin.Context, store: Store, learn: Learn) {
-  return ctx.rpc.register(LearningRpc, registerMethods(ctx, store, learn))
+  return ctx.rpc.register(learningRpc, {
+    review: ({ sessionId }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap((ref) => learn(ref)),
+        Effect.map(reviewResponse),
+        mapFailure((message) => context.error('failure', message, { message }))
+      ),
+    pending: ({ sessionId }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap(() => pendingSummary(store)),
+        mapFailure((message) => context.error('failure', message, { message }))
+      ),
+    proposal: ({ sessionId, id }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap(() => proposalDetail(store, id)),
+        mapFailure((message) => context.error('failure', message, { message }))
+      ),
+    approve: ({ sessionId, id }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap(() => Effect.promise(async () => store.approve(id))),
+        Effect.flatMap((skillId) => ctx.skill.reload().pipe(Effect.as({ skillId }))),
+        mapFailure((message) => context.error('failure', message, { message }))
+      ),
+    reject: ({ sessionId, id }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap(() => Effect.promise(async () => store.reject(id))),
+        Effect.as({}),
+        mapFailure((message) => context.error('failure', message, { message }))
+      ),
+    promote: ({ sessionId, skillId }, context) =>
+      assertRoot(ctx, sessionId).pipe(
+        Effect.flatMap(() => Effect.promise(async () => store.promote(skillId))),
+        Effect.flatMap(() => ctx.skill.reload()),
+        Effect.as({}),
+        mapFailure((message) => context.error('failure', message, { message }))
+      )
+  })
 }
