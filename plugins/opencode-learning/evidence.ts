@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { hasOwnership, skillDescription, type FileManifest } from './skill-files.ts'
+import type { FileManifest } from './skill-files.ts'
+import { hasOwnership, skillDescription } from './skill-markdown.ts'
 import type { Store } from './store.ts'
 
 const CONTROL = /^\/learn(?:\s|$|-)/v
