@@ -1,6 +1,5 @@
 import { candidatePacket, catalog, type Candidate } from './candidates.ts'
 
-const CONTROL = /^\/learn(?:\s|$|-)/v
 const PATH_KEYS = new Set(['path', 'target', 'file'])
 const NESTED_KEYS = new Set(['metadata', 'relevantInput'])
 const encoder = new TextEncoder()
@@ -40,20 +39,12 @@ const PART_COMPACTERS: Record<string, (part: Record<string, unknown>) => unknown
 
 function compactPart(part: unknown): unknown[] {
   const item = messageRecord(part)
-  if (item === undefined) {
-    return []
-  }
-
-  if (typeof item.type !== 'string') {
+  if (item === undefined || typeof item.type !== 'string') {
     return []
   }
 
   const compacter = PART_COMPACTERS[item.type]
-  if (compacter === undefined) {
-    return []
-  }
-
-  return [compacter(item)]
+  return compacter === undefined ? [] : [compacter(item)]
 }
 
 function compactAssistant(message: Record<string, unknown>): unknown {
@@ -64,19 +55,16 @@ function compactAssistant(message: Record<string, unknown>): unknown {
   }
 }
 
-function compactUser(item: Record<string, unknown>): unknown | undefined {
+function compactUser(item: Record<string, unknown>): unknown {
   const text = typeof item.text === 'string' ? item.text : ''
-  return CONTROL.test(text) ? undefined : { type: 'user', text, files: item.files }
+  return { type: 'user', text, files: item.files }
 }
 
 function compactShell(item: Record<string, unknown>): unknown {
   return { type: 'shell', status: item.status, exit: item.exit }
 }
 
-const MESSAGE_COMPACTERS: Record<
-  string,
-  (message: Record<string, unknown>) => unknown | undefined
-> = {
+const MESSAGE_COMPACTERS: Record<string, (message: Record<string, unknown>) => unknown> = {
   user: compactUser,
   assistant: compactAssistant,
   shell: compactShell
@@ -84,28 +72,15 @@ const MESSAGE_COMPACTERS: Record<
 
 function compactMessage(message: unknown): unknown | undefined {
   const item = messageRecord(message)
-  if (item === undefined) {
+  if (item === undefined || typeof item.type !== 'string') {
     return undefined
   }
 
-  if (typeof item.type !== 'string') {
-    return undefined
-  }
-
-  const compacter = MESSAGE_COMPACTERS[item.type]
-  if (compacter === undefined) {
-    return undefined
-  }
-
-  return compacter(item)
+  return MESSAGE_COMPACTERS[item.type]?.(item)
 }
 
 function hasCollectedPath(key: string, item: unknown, output: Set<string>): boolean {
-  if (typeof item !== 'string') {
-    return false
-  }
-
-  if (!PATH_KEYS.has(key)) {
+  if (typeof item !== 'string' || !PATH_KEYS.has(key)) {
     return false
   }
 
@@ -114,11 +89,7 @@ function hasCollectedPath(key: string, item: unknown, output: Set<string>): bool
 }
 
 function collectPathEntry(key: string, item: unknown, output: Set<string>): void {
-  if (hasCollectedPath(key, item, output)) {
-    return
-  }
-
-  if (item === undefined) {
+  if (hasCollectedPath(key, item, output) || item === undefined) {
     return
   }
 

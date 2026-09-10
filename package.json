@@ -4,7 +4,10 @@
   "private": true,
   "repository": "github:mdc-git/opencode-learning",
   "type": "module",
-  "exports": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./plugins/opencode-learning/tui.ts"
+  },
   "sideEffects": false,
   "engines": {
     "node": ">=24"
