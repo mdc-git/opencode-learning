@@ -24,11 +24,11 @@ export type TreeScan = {
   totalSize: number
 }
 
-export type ProposedFile =
+type ProposedFile =
   | { path: string; content: string; executable: boolean }
   | { path: string; source: { from: 'project' | 'candidate'; path: string } }
 
-export type ProposedSkillFiles = { skillMd: string; files: ProposedFile[] }
+type ProposedSkillFiles = { skillMd: string; files: ProposedFile[] }
 
 type MaterializeOptions = {
   project: string
@@ -44,6 +44,7 @@ export function safeChild(root: string, child: string): string {
   if (!target.startsWith(`${path.resolve(root)}${path.sep}`)) {
     throw new Error('path escapes root')
   }
+
   return target
 }
 
@@ -54,10 +55,16 @@ function isExecutable(mode: number): boolean {
   return owner === 1 || group === 1 || other === 1
 }
 
-async function scanFile(root: string, full: string, size: number, mode: number): Promise<FileManifest> {
+async function scanFile(
+  root: string,
+  full: string,
+  size: number,
+  mode: number
+): Promise<FileManifest> {
   if (size > FILE_LIMIT) {
     throw new Error(`file exceeds 25 MiB: ${full}`)
   }
+
   const bytes = await fs.readFile(full)
   return {
     path: path.relative(root, full).split(path.sep).join('/'),
@@ -73,18 +80,23 @@ async function scanEntry(root: string, current: string, name: string): Promise<F
   if (stat.isSymbolicLink()) {
     throw new Error(`symlink is not allowed: ${full}`)
   }
+
   if (stat.isDirectory()) {
     return scanDirectory(root, full)
   }
+
   if (!stat.isFile()) {
     throw new Error(`unsupported filesystem entry: ${full}`)
   }
+
   return [await scanFile(root, full, stat.size, stat.mode)]
 }
 
 async function scanDirectory(root: string, current: string): Promise<FileManifest[]> {
   const entries = await fs.readdir(current, { withFileTypes: true })
-  const nested = await Promise.all(entries.map(async (entry) => scanEntry(root, current, entry.name)))
+  const nested = await Promise.all(
+    entries.map(async (entry) => scanEntry(root, current, entry.name))
+  )
   return nested.flat()
 }
 
@@ -93,17 +105,28 @@ export async function scanSkillTree(root: string): Promise<TreeScan> {
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error('skill root must be a real directory')
   }
-  const files = (await scanDirectory(root, root)).toSorted((left, right) => left.path.localeCompare(right.path))
+
+  const files = (await scanDirectory(root, root)).toSorted((left, right) =>
+    left.path.localeCompare(right.path)
+  )
   const totalSize = files.reduce((sum, file) => sum + file.size, 0)
   if (totalSize > TREE_LIMIT) {
     throw new Error('skill tree exceeds 100 MiB')
   }
-  const contents = await Promise.all(files.map(async (file) => fs.readFile(path.join(root, file.path))))
+
+  const contents = await Promise.all(
+    files.map(async (file) => fs.readFile(path.join(root, file.path)))
+  )
   const revision = crypto.createHash('sha256')
-  files.forEach((file, index) => {
-    revision.update(file.path).update('\0').update(file.executable ? '1' : '0').update('\0')
+  for (const [index, file] of files.entries()) {
+    revision
+      .update(file.path)
+      .update('\0')
+      .update(file.executable ? '1' : '0')
+      .update('\0')
     revision.update(contents[index] ?? new Uint8Array()).update('\0')
-  })
+  }
+
   return { files, totalSize, revision: revision.digest('hex') }
 }
 
@@ -112,14 +135,17 @@ function skillDocument(text: string) {
   if (match?.groups === undefined) {
     throw new Error('SKILL.md requires YAML frontmatter')
   }
+
   const document = parseDocument(match.groups.yaml ?? '')
   if (document.errors.length > 0) {
     throw new Error(`invalid SKILL.md frontmatter: ${document.errors[0]?.message}`)
   }
+
   const data = document.toJS() as unknown
   if (typeof data !== 'object' || data === null || Array.isArray(data)) {
     throw new Error('skill frontmatter must be a mapping')
   }
+
   return { document, data: data as Record<string, unknown>, body: match.groups.body ?? '' }
 }
 
@@ -128,14 +154,16 @@ function requireDescription(data: Record<string, unknown>): string {
   if (typeof description !== 'string' || description.trim() === '') {
     throw new Error('skill description is required')
   }
+
   return description
 }
 
-export function addOwnership(text: string): string {
+function addOwnership(text: string): string {
   const { document, data, body } = skillDocument(text)
   requireDescription(data)
   const current = data.metadata
-  const metadata = typeof current === 'object' && current !== null && !Array.isArray(current) ? current : {}
+  const metadata =
+    typeof current === 'object' && current !== null && !Array.isArray(current) ? current : {}
   document.set('metadata', { ...(metadata as Record<string, unknown>), [OWNER_KEY]: 'true' })
   return `---\n${String(document).trimEnd()}\n---\n${body}`
 }
@@ -148,19 +176,25 @@ export function hasOwnership(text: string): boolean {
   const { data } = skillDocument(text)
   requireDescription(data)
   const { metadata } = data
-  return typeof metadata === 'object' && metadata !== null && (metadata as Record<string, unknown>)[OWNER_KEY] === 'true'
+  return (
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    (metadata as Record<string, unknown>)[OWNER_KEY] === 'true'
+  )
 }
 
 export async function validateSkillTree(root: string, isOwned: boolean): Promise<TreeScan> {
   const scan = await scanSkillTree(root)
-  if (!scan.files.some((file) => file.path === 'SKILL.md')) {
+  if (scan.files.every((file) => file.path !== 'SKILL.md')) {
     throw new Error('skill tree requires SKILL.md')
   }
+
   const markdown = await fs.readFile(path.join(root, 'SKILL.md'), 'utf8')
   requireDescription(skillDocument(markdown).data)
   if (isOwned && !hasOwnership(markdown)) {
     throw new Error('skill is not owned by opencode-learning')
   }
+
   return scan
 }
 
@@ -183,13 +217,16 @@ export async function copySkillTree(source: string, destination: string): Promis
   const wanted = new Set(scan.files.map((file) => file.path))
   const current = await scanSkillTree(destination)
   const removed = current.files.filter((file) => !wanted.has(file.path))
-  await Promise.all(removed.map(async (file) => fs.rm(path.join(destination, file.path), { force: true })))
+  await Promise.all(
+    removed.map(async (file) => fs.rm(path.join(destination, file.path), { force: true }))
+  )
 }
 
 function invalidDestination(relative: string): boolean {
   if (relative === 'SKILL.md' || path.isAbsolute(relative) || relative.includes('\\')) {
     return true
   }
+
   return relative.split('/').some((part) => part === '' || part === '.' || part === '..')
 }
 
@@ -200,44 +237,61 @@ function validateGenerated(skill: ProposedSkillFiles): void {
   if (sizes.some((size) => size > GENERATED_FILE_LIMIT)) {
     throw new Error('generated supporting file exceeds 1 MiB')
   }
-  const total = encoder.encode(skill.skillMd).byteLength + sizes.reduce((sum, size) => sum + size, 0)
+
+  const total =
+    encoder.encode(skill.skillMd).byteLength + sizes.reduce((sum, size) => sum + size, 0)
   if (total > GENERATED_TOTAL_LIMIT) {
     throw new Error('generated content exceeds 10 MiB')
   }
+
   const paths = skill.files.map((file) => file.path)
   if (new Set(paths).size !== paths.length || paths.some(invalidDestination)) {
     throw new Error('supporting file paths must be unique safe relative paths')
   }
 }
 
-function sourcePath(options: MaterializeOptions, file: Extract<ProposedFile, { source: unknown }>): string {
+function sourcePath(
+  options: MaterializeOptions,
+  file: Extract<ProposedFile, { source: unknown }>
+): string {
   if (file.source.from === 'candidate') {
-    const candidate = options.candidate
-    if (candidate === undefined || !candidate.manifest.some((item) => item.path === file.source.path)) {
+    const { candidate } = options
+    if (!candidate?.manifest.some((item) => item.path === file.source.path)) {
       throw new Error('invalid candidate source')
     }
+
     return safeChild(candidate.root, file.source.path)
   }
+
   const projectSource = safeChild(options.project, file.source.path)
-  const authorized = options.authorizedPaths.some((item) => path.resolve(options.project, item) === projectSource)
-  if (!authorized) {
+  const isAuthorized = options.authorizedPaths.some(
+    (item) => path.resolve(options.project, item) === projectSource
+  )
+  if (!isAuthorized) {
     throw new Error('project source was not authorized by structured evidence')
   }
+
   return projectSource
 }
 
-async function writeProposedFile(options: MaterializeOptions, skillRoot: string, file: ProposedFile): Promise<void> {
+async function writeProposedFile(
+  options: MaterializeOptions,
+  skillRoot: string,
+  file: ProposedFile
+): Promise<void> {
   const target = safeChild(skillRoot, file.path)
   await fs.mkdir(path.dirname(target), { recursive: true })
   if ('content' in file) {
     await fs.writeFile(target, file.content, { mode: file.executable ? 0o755 : 0o644 })
     return
   }
+
   const source = sourcePath(options, file)
   const stat = await fs.lstat(source)
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new Error('source must be a regular non-symlink file')
   }
+
   await fs.copyFile(source, target)
   await fs.chmod(target, isExecutable(stat.mode) ? 0o755 : 0o644)
 }
@@ -248,7 +302,9 @@ export async function materializeSkill(options: MaterializeOptions) {
   const skillRoot = path.join(root, 'skill')
   await fs.mkdir(skillRoot, { recursive: true })
   await fs.writeFile(path.join(skillRoot, 'SKILL.md'), addOwnership(options.skill.skillMd))
-  await Promise.all(options.skill.files.map(async (file) => writeProposedFile(options, skillRoot, file)))
+  await Promise.all(
+    options.skill.files.map(async (file) => writeProposedFile(options, skillRoot, file))
+  )
   const scan = await validateSkillTree(skillRoot, true)
   return { root, skillRoot, scan }
 }

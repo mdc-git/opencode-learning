@@ -7,8 +7,12 @@ import type { Store } from './store.ts'
 
 type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
 
-function emit(ctx: Plugin.Context, sessionId: SessionId, text: string): Effect.Effect<void, unknown> {
-  return ctx.session.synthetic({ ['sessionID']: sessionId, text, resume: false }).pipe(Effect.asVoid)
+function emit(
+  ctx: Plugin.Context,
+  sessionId: SessionId,
+  text: string
+): Effect.Effect<void, unknown> {
+  return ctx.session.synthetic({ sessionID: sessionId, text, resume: false }).pipe(Effect.asVoid)
 }
 
 function resultText(result: ReviewResult): string {
@@ -29,13 +33,15 @@ function runCommand(
   sessionId: SessionId,
   effect: Effect.Effect<string, unknown>
 ): Effect.Effect<void, unknown> {
-  const rootOnly = ctx.session.get({ ['sessionID']: sessionId }).pipe(
-    Effect.flatMap((session) =>
-      session.parentID === undefined
-        ? effect
-        : Effect.fail(new Error('learning commands are root-session-only'))
+  const rootOnly = ctx.session
+    .get({ sessionID: sessionId })
+    .pipe(
+      Effect.flatMap((session) =>
+        session.parentID === undefined
+          ? effect
+          : Effect.fail(new Error('learning commands are root-session-only'))
+      )
     )
-  )
 
   return rootOnly.pipe(
     Effect.catchAll((error) =>
@@ -70,8 +76,8 @@ async function pendingText(store: Store, id: string): Promise<string> {
     'files:',
     ...current.files,
     '',
-    ...scan.files.map((file) =>
-      `${file.path} ${file.size} ${file.hash}${file.executable ? ' executable' : ''}`
+    ...scan.files.map(
+      (file) => `${file.path} ${file.size} ${file.hash}${file.executable ? ' executable' : ''}`
     ),
     '',
     markdown
@@ -101,7 +107,11 @@ export function registerCommands(
         description: 'List or inspect staged learning proposals.',
         execute({ sessionID: sessionId, prompt }) {
           const id = prompt.text.trim()
-          return runCommand(ctx, sessionId, storeEffect(async () => pendingText(store, id)))
+          return runCommand(
+            ctx,
+            sessionId,
+            storeEffect(async () => pendingText(store, id))
+          )
         }
       })
       editor.add({

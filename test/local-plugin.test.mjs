@@ -25,7 +25,9 @@ async function api(base, requestPath, options = {}) {
     ...options,
     headers: { authorization, 'content-type': 'application/json', ...options.headers }
   })
-  if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`)
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${await response.text()}`)
+  }
   return response.status === 204 ? undefined : response.json()
 }
 
@@ -34,7 +36,9 @@ async function serverUrl(server) {
   try {
     const [line] = await Promise.race([
       once(lines, 'line'),
-      once(server, 'exit').then(([code]) => Promise.reject(new Error(`server exited ${code}`)))
+      once(server, 'exit').then(([code]) => {
+        throw new Error(`server exited ${code}`)
+      })
     ])
     return JSON.parse(line).url
   } finally {
@@ -44,7 +48,9 @@ async function serverUrl(server) {
 
 function startServer(project, root) {
   const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name))
+    Object.entries(process.env).filter(
+      ([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
+    )
   )
   return spawn(process.env.OPENCODE_BIN ?? 'opencode2', ['serve', '--stdio', '--port', '0'], {
     cwd: project,
@@ -69,10 +75,17 @@ function startServer(project, root) {
 }
 
 async function stopServer(server) {
-  if (server.exitCode !== null) return
+  if (server.exitCode !== null) {
+    return
+  }
   server.kill('SIGTERM')
-  const closed = await Promise.race([once(server, 'close').then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 2000))])
-  if (!closed) server.kill('SIGKILL')
+  const closed = await Promise.race([
+    once(server, 'close').then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 2000))
+  ])
+  if (!closed) {
+    server.kill('SIGKILL')
+  }
 }
 
 function locationQuery(project) {
@@ -85,9 +98,15 @@ async function waitForPlugin(base, project) {
     const plugins = await api(base, `/api/plugin${locationQuery(project)}`)
     const plugin = plugins.data.find((item) => item.id === 'github.learning_skills')
     const registered = await api(base, `/api/command${locationQuery(project)}`)
-    if (plugin?.state?.status === 'active' && commands.every((name) => registered.data.some((item) => item.name === name))) return plugin
+    if (
+      plugin?.state?.status === 'active' &&
+      commands.every((name) => registered.data.some((item) => item.name === name))
+    ) {
+      return plugin
+    }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
+
   throw new Error('learning plugin did not activate')
 }
 
@@ -112,26 +131,50 @@ test('package-root plugin exposes only the current learning surface and stages e
   try {
     await mkdir(project, { recursive: true })
     await mkdir(path.join(root, 'tmp'), { recursive: true })
-    await writeFile(path.join(project, 'opencode.jsonc'), `${JSON.stringify({ plugins: [repository] })}\n`)
+    await writeFile(
+      path.join(project, 'opencode.jsonc'),
+      `${JSON.stringify({ plugins: [repository] })}\n`
+    )
     server = startServer(project, root)
     const base = await serverUrl(server)
     const session = await api(base, '/api/session', {
       method: 'POST',
       body: JSON.stringify({ location: { directory: project } })
     })
-    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, { method: 'POST', body: '{}' })
+    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, {
+      method: 'POST',
+      body: '{}'
+    })
     const plugin = await waitForPlugin(base, project)
     assert.equal(plugin.source.type, 'local')
 
     const registered = await api(base, `/api/command${locationQuery(project)}`)
-    const learning = registered.data.map((item) => item.name).filter((name) => name.startsWith('learn'))
+    const learning = registered.data
+      .map((item) => item.name)
+      .filter((name) => name.startsWith('learn'))
     assert.deepEqual(learning.toSorted(), commands.toSorted())
 
-    const create = { kind: 'create', skillId: 'created-skill', reason: 'verified procedure', evidence: { records: [], omitted: 0 } }
+    const create = {
+      kind: 'create',
+      skillId: 'created-skill',
+      reason: 'verified procedure',
+      evidence: { records: [], omitted: 0 }
+    }
     await writeProposal(project, idA, create, skill('Created skill'))
     await runCommand(base, session.data.id, 'learn-approve', idA)
-    assert.match(await readFile(path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md'), 'utf8'), /Created skill/v)
-    await assert.rejects(readFile(path.join(project, '.opencode', '.learning', 'pending', idA, 'proposal.json'), 'utf8'))
+    assert.match(
+      await readFile(
+        path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md'),
+        'utf8'
+      ),
+      /Created skill/v
+    )
+    await assert.rejects(
+      readFile(
+        path.join(project, '.opencode', '.learning', 'pending', idA, 'proposal.json'),
+        'utf8'
+      )
+    )
 
     const malformed = path.join(project, '.opencode', '.learning', 'pending', idB)
     await mkdir(malformed, { recursive: true })
@@ -148,7 +191,9 @@ test('package-root plugin exposes only the current learning surface and stages e
       await readFile(path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md'), 'utf8')
     )
   } finally {
-    if (server) await stopServer(server)
+    if (server) {
+      await stopServer(server)
+    }
     await rm(root, { recursive: true, force: true })
   }
 })

@@ -25,7 +25,11 @@ const {
   Struct: struct,
   Union: union
 } = Schema
-const generatedFileSchema = struct({ path: stringSchema, content: stringSchema, executable: booleanSchema })
+const generatedFileSchema = struct({
+  path: stringSchema,
+  content: stringSchema,
+  executable: booleanSchema
+})
 const projectSourceSchema = struct({ from: literals(['project']), path: stringSchema })
 const candidateSourceSchema = struct({ from: literals(['candidate']), path: stringSchema })
 const sourceFileSchema = struct({
@@ -90,11 +94,15 @@ function modelKey(model: { id: unknown; providerID: unknown; variant?: unknown }
   return JSON.stringify({ providerID: model.providerID, id: model.id, variant: model.variant })
 }
 
-function modelInputLimit(models: readonly CatalogModel[], model: { id: unknown; providerID: unknown }): number {
+function modelInputLimit(
+  models: readonly CatalogModel[],
+  model: { id: unknown; providerID: unknown }
+): number {
   const found = models.find((item) => item.id === model.id && item.providerID === model.providerID)
   if (found === undefined) {
     throw new Error('selected model is absent from the current catalog')
   }
+
   return found.limit.input ?? Math.max(1, found.limit.context - found.limit.output)
 }
 
@@ -112,7 +120,8 @@ function isolatedGenerate(
         if (!JSON.stringify(request.messages).includes(marker)) {
           return Effect.void
         }
-        return ctx.session.context({ ['sessionID']: sessionId }).pipe(
+
+        return ctx.session.context({ sessionID: sessionId }).pipe(
           Effect.map((messages) => {
             const maxBytes = modelInputLimit(models.data, request.model)
             const prompt = prepare(messages, maxBytes)
@@ -124,11 +133,12 @@ function isolatedGenerate(
           Effect.orDie
         )
       })
-      const generated = yield* ctx.session.generate({ ['sessionID']: sessionId, prompt: marker })
+      const generated = yield* ctx.session.generate({ sessionID: sessionId, prompt: marker })
       yield* registration.dispose
       if (capturedModel === '') {
         return yield* Effect.fail(new Error('review context hook did not capture generation'))
       }
+
       return { text: generated.text, model: capturedModel }
     })
   )
@@ -163,10 +173,12 @@ function patchCandidate(reflection: Reflection, candidates: Candidate[]): Candid
   if (reflection.kind !== 'patch') {
     return undefined
   }
+
   const candidate = candidates.find((item) => item.id === reflection.skillId)
   if (candidate === undefined) {
     throw new Error('patch target was not a full candidate')
   }
+
   return candidate
 }
 
@@ -181,7 +193,13 @@ function reflect(
     const capture = reflectionCapture(all, startAfter)
     const generated = yield* isolatedGenerate(ctx, sessionId, capture.prepare)
     const { evidence, candidates } = capture.result()
-    return { reflection: decodeReflection(generated.text), evidence, candidates, all, model: generated.model }
+    return {
+      reflection: decodeReflection(generated.text),
+      evidence,
+      candidates,
+      all,
+      model: generated.model
+    }
   })
 }
 
@@ -189,6 +207,7 @@ async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Pr
   if (candidate === undefined) {
     return
   }
+
   const current = await scanSkillTree(path.join(store.projectSkills, candidate.id))
   if (current.revision !== candidate.revision) {
     throw new Error('patch candidate changed during review')
@@ -202,16 +221,18 @@ function proposalFor(result: ReflectionResult, candidate?: Candidate): ProposalM
     skillId: reflection.skillId,
     reason: reflection.reason,
     evidence: result.evidence,
-    ...(candidate === undefined ? {} : { expectedRevision: candidate.revision })
+    ...(candidate !== undefined && { expectedRevision: candidate.revision })
   }
 }
 
-function sourceSnapshots(reflection: ActiveReflection, files: readonly { path: string }[]) {
-  const sourcePaths = new Set(reflection.skill.files.filter((file) => 'source' in file).map((file) => file.path))
+function sourceSnapshots(reflection: ActiveReflection, files: ReadonlyArray<{ path: string }>) {
+  const sourcePaths = new Set(
+    reflection.skill.files.filter((file) => 'source' in file).map((file) => file.path)
+  )
   return files.filter((file) => sourcePaths.has(file.path))
 }
 
-function validatorPacket(result: ReflectionResult, files: readonly { path: string }[]) {
+function validatorPacket(result: ReflectionResult, files: ReadonlyArray<{ path: string }>) {
   const reflection = result.reflection as ActiveReflection
   return {
     evidence: result.evidence,
@@ -235,7 +256,7 @@ function validateMaterialized(
   ctx: Plugin.Context,
   sessionId: SessionId,
   result: ReflectionResult,
-  files: readonly { path: string }[]
+  files: ReadonlyArray<{ path: string }>
 ): Effect.Effect<typeof validationSchema.Type, unknown> {
   const packet = validatorPacket(result, files)
   return isolatedGenerate(ctx, sessionId, (_messages, maxBytes) => {
@@ -243,6 +264,7 @@ function validateMaterialized(
     if (packetBytes(prompt) > maxBytes) {
       throw new Error('validator request exceeds model input limit')
     }
+
     return prompt
   }).pipe(
     Effect.flatMap((generated) =>
@@ -260,18 +282,25 @@ function processReflection(
   result: ReflectionResult
 ): Effect.Effect<ReviewResult, unknown> {
   if (result.reflection.kind === 'none') {
-    return Effect.succeed({ kind: 'none', reason: result.reflection.reason, endCursor: result.evidence.endCursor })
+    return Effect.succeed({
+      kind: 'none',
+      reason: result.reflection.reason,
+      endCursor: result.evidence.endCursor
+    })
   }
-  const reflection = result.reflection
+
+  const { reflection } = result
   return Effect.gen(function* () {
     validateReflection(reflection)
     const candidate = patchCandidate(reflection, result.candidates)
     if (reflection.kind === 'create') {
       yield* Effect.promise(async () => store.assertCreateAvailable(reflection.skillId))
     }
+
     yield* Effect.promise(async () => assertCandidateUnchanged(store, candidate))
     const id = crypto.randomUUID()
-    const candidateRoot = candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
+    const candidateRoot =
+      candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
     const materialized = yield* Effect.promise(async () =>
       materializeSkill({
         project: store.project,
@@ -279,22 +308,33 @@ function processReflection(
         id,
         skill: reflection.skill,
         authorizedPaths: result.evidence.authorizedPaths,
-        ...(candidate === undefined ? {} : { candidate: { root: candidateRoot ?? '', manifest: candidate.manifest } })
+        ...(candidate !== undefined && {
+          candidate: { root: candidateRoot ?? '', manifest: candidate.manifest }
+        })
       })
     )
     const finish = Effect.gen(function* () {
-      const validation = yield* validateMaterialized(ctx, sessionId, result, materialized.scan.files)
+      const validation = yield* validateMaterialized(
+        ctx,
+        sessionId,
+        result,
+        materialized.scan.files
+      )
       if (!validation.accept) {
-        return { kind: 'rejected', reason: validation.reason, endCursor: result.evidence.endCursor } as ReviewResult
+        return { kind: 'rejected', reason: validation.reason, endCursor: result.evidence.endCursor }
       }
+
       if ((yield* Effect.promise(async () => store.pendingCount())) >= PENDING_LIMIT) {
-        return { kind: 'cap', endCursor: result.evidence.endCursor } as ReviewResult
+        return { kind: 'cap', endCursor: result.evidence.endCursor }
       }
+
       const proposal = proposalFor(result, candidate)
       yield* Effect.promise(async () => store.stage(proposal, materialized.root, id))
-      return { kind: 'staged', id, proposal, endCursor: result.evidence.endCursor } as ReviewResult
+      return { kind: 'staged', id, proposal, endCursor: result.evidence.endCursor }
     })
-    const cleanup = Effect.promise(async () => fs.rm(materialized.root, { recursive: true, force: true }))
+    const cleanup = Effect.promise(async () =>
+      fs.rm(materialized.root, { recursive: true, force: true })
+    )
     return yield* finish.pipe(Effect.ensuring(cleanup))
   })
 }
@@ -309,6 +349,7 @@ export function runReview(
     if ((yield* Effect.promise(async () => store.pendingCount())) >= PENDING_LIMIT) {
       return { kind: 'cap', endCursor: startAfter }
     }
+
     const result = yield* reflect(ctx, store, sessionId, startAfter)
     return yield* processReflection(ctx, store, sessionId, result)
   })

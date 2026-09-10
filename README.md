@@ -99,7 +99,7 @@ Plugin-owned skills carry this frontmatter metadata:
 
 ```yaml
 metadata:
-  opencode-learning/owner: "true"
+  opencode-learning/owner: 'true'
 ```
 
 A valid skill tree contains a valid `SKILL.md`, real directories and regular files only, no symlinks, no file larger than 25 MiB, and no more than 100 MiB total. Reflector-generated supporting files are limited to 1 MiB each and 10 MiB generated content total.

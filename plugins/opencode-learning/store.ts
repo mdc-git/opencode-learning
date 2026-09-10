@@ -15,8 +15,6 @@ const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
 const REVISION = /^[0-9a-f]{64}$/v
 export const PENDING_LIMIT = 20
 
-export type { FileManifest } from './skill-files.ts'
-
 export type ProposalMetadata = {
   kind: 'create' | 'patch'
   skillId: string
@@ -49,6 +47,7 @@ async function isPresent(file: string): Promise<boolean> {
     if (errorCode(error) === 'ENOENT') {
       return false
     }
+
     throw error
   }
 }
@@ -58,10 +57,12 @@ function globalSkillsRoot(): string {
   if (config !== undefined && config !== '') {
     return path.join(config, 'opencode', 'skills')
   }
+
   const home = process.env.HOME
   if (home === undefined || home === '') {
     throw new Error('HOME is required when XDG_CONFIG_HOME is unset')
   }
+
   return path.join(home, '.config', 'opencode', 'skills')
 }
 
@@ -79,18 +80,22 @@ function storePaths(project: string): StorePaths {
 async function pendingIds(paths: StorePaths): Promise<string[]> {
   await fs.mkdir(paths.pending, { recursive: true })
   const entries = await fs.readdir(paths.pending, { withFileTypes: true })
-  return entries.filter((entry) => entry.isDirectory() && UUID.test(entry.name)).map((entry) => entry.name)
+  return entries
+    .filter((entry) => entry.isDirectory() && UUID.test(entry.name))
+    .map((entry) => entry.name)
 }
 
 function proposalRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('invalid proposal metadata')
   }
+
   const input = value as Record<string, unknown>
   const allowed = new Set(['kind', 'skillId', 'reason', 'evidence', 'expectedRevision'])
   if (Object.keys(input).some((key) => !allowed.has(key))) {
     throw new Error('proposal metadata contains unsupported fields')
   }
+
   return input
 }
 
@@ -98,13 +103,21 @@ function proposalBase(input: Record<string, unknown>) {
   if (input.kind !== 'create' && input.kind !== 'patch') {
     throw new Error('invalid proposal kind')
   }
+
   if (typeof input.skillId !== 'string' || !SKILL_ID.test(input.skillId)) {
     throw new Error('invalid skill id')
   }
+
   if (typeof input.reason !== 'string' || !('evidence' in input)) {
     throw new Error('proposal reason and evidence are required')
   }
-  return { kind: input.kind, skillId: input.skillId, reason: input.reason, evidence: input.evidence }
+
+  return {
+    kind: input.kind,
+    skillId: input.skillId,
+    reason: input.reason,
+    evidence: input.evidence
+  }
 }
 
 function decodeProposal(value: unknown): ProposalMetadata {
@@ -114,11 +127,14 @@ function decodeProposal(value: unknown): ProposalMetadata {
     if ('expectedRevision' in input) {
       throw new Error('create proposal must not have expectedRevision')
     }
+
     return proposal
   }
+
   if (typeof input.expectedRevision !== 'string' || !REVISION.test(input.expectedRevision)) {
     throw new Error('patch expectedRevision is required')
   }
+
   return { ...proposal, expectedRevision: input.expectedRevision }
 }
 
@@ -126,6 +142,7 @@ async function readPending(paths: StorePaths, id: string): Promise<PendingPropos
   if (!UUID.test(id)) {
     throw new Error('proposal id must be an exact UUID')
   }
+
   const directory = safeChild(paths.pending, id)
   const text = await fs.readFile(path.join(directory, 'proposal.json'), 'utf8')
   return { id, ...decodeProposal(JSON.parse(text)) }
@@ -160,14 +177,17 @@ function sameFile(left: FileManifest, right: FileManifest): boolean {
 }
 
 function fileStatuses(staged: TreeScan, current?: TreeScan): string[] {
-  const currentFiles = new Map(current?.files.map((file) => [file.path, file]) ?? [])
+  const currentFiles = new Map(current?.files.map((file) => [file.path, file]))
   const stagedFiles = new Set(staged.files.map((file) => file.path))
   const present = staged.files.map((file) => {
     const previous = currentFiles.get(file.path)
-    const status = previous === undefined ? 'added' : sameFile(file, previous) ? 'unchanged' : 'changed'
+    const status =
+      previous === undefined ? 'added' : sameFile(file, previous) ? 'unchanged' : 'changed'
     return `${status} ${file.path}`
   })
-  const removed = (current?.files ?? []).filter((file) => !stagedFiles.has(file.path)).map((file) => `removed ${file.path}`)
+  const removed = (current?.files ?? [])
+    .filter((file) => !stagedFiles.has(file.path))
+    .map((file) => `removed ${file.path}`)
   return [...present, ...removed]
 }
 
@@ -177,23 +197,38 @@ async function patchStatus(paths: StorePaths, proposal: PendingProposal) {
   if (proposal.kind === 'create') {
     return { isStale: false, files: fileStatuses(staged) }
   }
+
   try {
     const current = await validateSkillTree(safeChild(paths.projectSkills, proposal.skillId), true)
-    return { isStale: current.revision !== proposal.expectedRevision, files: fileStatuses(staged, current) }
+    return {
+      isStale: current.revision !== proposal.expectedRevision,
+      files: fileStatuses(staged, current)
+    }
   } catch {
     return { isStale: true, files: fileStatuses(staged) }
   }
 }
 
-async function stage(paths: StorePaths, metadata: ProposalMetadata, temporaryRoot: string, id: string): Promise<void> {
+async function stage(
+  paths: StorePaths,
+  metadata: ProposalMetadata,
+  temporaryRoot: string,
+  id: string
+): Promise<void> {
   if ((await pendingIds(paths)).length >= PENDING_LIMIT) {
     throw new Error('pending proposal limit reached')
   }
+
   const destination = safeChild(paths.pending, id)
   if (await isPresent(destination)) {
     throw new Error('proposal id collision')
   }
-  await fs.writeFile(path.join(temporaryRoot, 'proposal.json'), `${JSON.stringify(metadata, null, 2)}\n`, { mode: 0o644 })
+
+  await fs.writeFile(
+    path.join(temporaryRoot, 'proposal.json'),
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    { mode: 0o644 }
+  )
   await fs.mkdir(path.dirname(destination), { recursive: true })
   await fs.rename(temporaryRoot, destination)
 }
@@ -202,6 +237,7 @@ async function assertCreateAvailable(paths: StorePaths, skillId: string): Promis
   if (!SKILL_ID.test(skillId)) {
     throw new Error('invalid skill id')
   }
+
   const occupied = await Promise.all([
     isPresent(safeChild(paths.projectSkills, skillId)),
     isPresent(safeChild(paths.globalSkills, skillId))
@@ -217,10 +253,12 @@ async function approvalTarget(paths: StorePaths, proposal: PendingProposal): Pro
     await assertCreateAvailable(paths, proposal.skillId)
     return target
   }
+
   const current = await validateSkillTree(target, true)
   if (current.revision !== proposal.expectedRevision) {
     throw new Error('patch target is stale')
   }
+
   return target
 }
 
@@ -234,6 +272,7 @@ async function approve(paths: StorePaths, id: string): Promise<string> {
   if (applied.revision !== intended.revision || unchanged.revision !== intended.revision) {
     throw new Error('approval post-check failed')
   }
+
   await fs.rm(safeChild(paths.pending, id), { recursive: true })
   return proposal.skillId
 }
@@ -242,10 +281,12 @@ async function removeGlobalTarget(target: string): Promise<void> {
   if (!(await isPresent(target))) {
     return
   }
+
   const stat = await fs.lstat(target)
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error('global destination is not a real directory')
   }
+
   await fs.rm(target, { recursive: true })
 }
 
@@ -253,6 +294,7 @@ async function promote(paths: StorePaths, skillId: string): Promise<void> {
   if (!SKILL_ID.test(skillId)) {
     throw new Error('invalid skill id')
   }
+
   const source = safeChild(paths.projectSkills, skillId)
   const intended = await validateSkillTree(source, true)
   const target = safeChild(paths.globalSkills, skillId)
@@ -272,11 +314,13 @@ export function createStore(project: string) {
     listPending: async () => listPending(paths),
     readPending: async (id: string) => readPending(paths, id),
     patchStatus: async (proposal: PendingProposal) => patchStatus(paths, proposal),
-    stage: async (metadata: ProposalMetadata, temporaryRoot: string, id: string) => stage(paths, metadata, temporaryRoot, id),
-    reject: async (id: string) => {
+    stage: async (metadata: ProposalMetadata, temporaryRoot: string, id: string) =>
+      stage(paths, metadata, temporaryRoot, id),
+    async reject(id: string) {
       if (!UUID.test(id)) {
         throw new Error('proposal id must be an exact UUID')
       }
+
       await fs.rm(safeChild(paths.pending, id), { recursive: true, force: true })
     },
     approve: async (id: string) => approve(paths, id),
