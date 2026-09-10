@@ -21,15 +21,20 @@ function skill(description, body = '# Learned\n\nDo the verified thing.\n') {
 }
 
 async function api(base, requestPath, options = {}) {
-  const response = await fetch(new URL(requestPath, base), {
-    ...options,
-    headers: { authorization, 'content-type': 'application/json', ...options.headers }
-  })
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${await response.text()}`)
-  }
+  try {
+    const response = await fetch(new URL(requestPath, base), {
+      ...options,
+      signal: options.signal ?? AbortSignal.timeout(10_000),
+      headers: { authorization, 'content-type': 'application/json', ...options.headers }
+    })
+    if (!response.ok) {
+      throw new Error(`${response.status}: ${await response.text()}`)
+    }
 
-  return response.status === 204 ? undefined : response.json()
+    return response.status === 204 ? undefined : response.json()
+  } catch (error) {
+    throw new Error(`${requestPath}: ${String(error)}`, { cause: error })
+  }
 }
 
 async function serverUrl(server) {
