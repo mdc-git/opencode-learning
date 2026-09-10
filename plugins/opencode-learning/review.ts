@@ -91,7 +91,7 @@ function reviewerPrompt(instruction: string, packet: unknown): string {
 }
 
 function modelKey(model: { id: unknown; providerID: unknown; variant?: unknown }): string {
-  return JSON.stringify({ providerID: model.providerID, id: model.id, variant: model.variant })
+  return JSON.stringify([model.providerID, model.id, model.variant])
 }
 
 function modelInputLimit(
@@ -128,7 +128,9 @@ function isolatedGenerate(
             capturedModel = modelKey(request.model)
             request.system = []
             request.tools = {}
-            request.messages = [{ role: 'user', content: prompt }]
+            request.messages = [
+              { role: 'user', content: [{ type: 'text', text: prompt }] }
+            ]
           }),
           Effect.orDie
         )
@@ -214,13 +216,16 @@ async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Pr
   }
 }
 
-function proposalFor(result: ReflectionResult, candidate?: Candidate): ProposalMetadata {
-  const reflection = result.reflection as ActiveReflection
+function proposalFor(
+  reflection: ActiveReflection,
+  evidence: Evidence,
+  candidate?: Candidate
+): ProposalMetadata {
   return {
     kind: reflection.kind,
     skillId: reflection.skillId,
     reason: reflection.reason,
-    evidence: result.evidence,
+    evidence,
     ...(candidate !== undefined && { expectedRevision: candidate.revision })
   }
 }
@@ -232,8 +237,11 @@ function sourceSnapshots(reflection: ActiveReflection, files: ReadonlyArray<{ pa
   return files.filter((file) => sourcePaths.has(file.path))
 }
 
-function validatorPacket(result: ReflectionResult, files: ReadonlyArray<{ path: string }>) {
-  const reflection = result.reflection as ActiveReflection
+function validatorPacket(
+  reflection: ActiveReflection,
+  result: ReflectionResult,
+  files: ReadonlyArray<{ path: string }>
+) {
   return {
     evidence: result.evidence,
     ownedSkills: catalog(result.all),
@@ -255,10 +263,11 @@ function validateReflection(reflection: ActiveReflection): void {
 function validateMaterialized(
   ctx: Plugin.Context,
   sessionId: SessionId,
+  reflection: ActiveReflection,
   result: ReflectionResult,
   files: ReadonlyArray<{ path: string }>
 ): Effect.Effect<typeof validationSchema.Type, unknown> {
-  const packet = validatorPacket(result, files)
+  const packet = validatorPacket(reflection, result, files)
   return isolatedGenerate(ctx, sessionId, (_messages, maxBytes) => {
     const prompt = reviewerPrompt(VALIDATOR, packet)
     if (packetBytes(prompt) > maxBytes) {
@@ -289,7 +298,7 @@ function processReflection(
     })
   }
 
-  const { reflection } = result
+  const reflection = result.reflection
   return Effect.gen(function* () {
     validateReflection(reflection)
     const candidate = patchCandidate(reflection, result.candidates)
@@ -317,6 +326,7 @@ function processReflection(
       const validation = yield* validateMaterialized(
         ctx,
         sessionId,
+        reflection,
         result,
         materialized.scan.files
       )
@@ -328,7 +338,7 @@ function processReflection(
         return { kind: 'cap', endCursor: result.evidence.endCursor }
       }
 
-      const proposal = proposalFor(result, candidate)
+      const proposal = proposalFor(reflection, result.evidence, candidate)
       yield* Effect.promise(async () => store.stage(proposal, materialized.root, id))
       return { kind: 'staged', id, proposal, endCursor: result.evidence.endCursor }
     })
