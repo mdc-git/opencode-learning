@@ -4,8 +4,8 @@ import { hasOwnership, skillDescription, type FileManifest } from './skill-files
 import type { Store } from './store.ts'
 
 const CONTROL = /^\/learn(?:\s|$|-)/v
-const PATH_KEYS = ['path', 'target', 'file']
-const NESTED_KEYS = ['metadata', 'relevantInput']
+const PATH_KEYS = new Set(['path', 'target', 'file'])
+const NESTED_KEYS = new Set(['metadata', 'relevantInput'])
 const encoder = new TextEncoder()
 
 export type Candidate = {
@@ -29,6 +29,10 @@ function messageRecord(message: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+function compactText(part: Record<string, unknown>): unknown {
+  return { type: 'text', text: part.text }
+}
+
 function compactTool(part: Record<string, unknown>): unknown {
   const state = messageRecord(part.state) ?? {}
   return {
@@ -40,18 +44,24 @@ function compactTool(part: Record<string, unknown>): unknown {
   }
 }
 
+const PART_COMPACTERS: Record<string, (part: Record<string, unknown>) => unknown> = {
+  text: compactText,
+  tool: compactTool
+}
+
 function compactPart(part: unknown): unknown[] {
   const item = messageRecord(part)
-  if (item?.type === 'text') {
-    return [{ type: 'text', text: item.text }]
-  }
-
-  return item?.type === 'tool' ? [compactTool(item)] : []
+  const type = typeof item?.type === 'string' ? item.type : ''
+  const compacter = PART_COMPACTERS[type]
+  return item === undefined || compacter === undefined ? [] : [compacter(item)]
 }
 
 function compactAssistant(message: Record<string, unknown>): unknown {
   const content = Array.isArray(message.content) ? message.content : []
-  return { type: 'assistant', content: content.flatMap(compactPart) }
+  return {
+    type: 'assistant',
+    content: content.flatMap((part) => compactPart(part))
+  }
 }
 
 function compactUser(item: Record<string, unknown>): unknown | undefined {
@@ -59,22 +69,32 @@ function compactUser(item: Record<string, unknown>): unknown | undefined {
   return CONTROL.test(text) ? undefined : { type: 'user', text, files: item.files }
 }
 
-function compactMessage(message: unknown): unknown | undefined {
-  const item = messageRecord(message)
-  switch (item?.type) {
-    case 'user':
-      return compactUser(item)
-    case 'assistant':
-      return compactAssistant(item)
-    case 'shell':
-      return { type: 'shell', status: item.status, exit: item.exit }
-    default:
-      return undefined
-  }
+function compactShell(item: Record<string, unknown>): unknown {
+  return { type: 'shell', status: item.status, exit: item.exit }
 }
 
-function collectPathField(key: string, item: unknown, output: Set<string>): boolean {
-  if (!PATH_KEYS.includes(key) || typeof item !== 'string') {
+const MESSAGE_COMPACTERS: Record<
+  string,
+  (message: Record<string, unknown>) => unknown | undefined
+> = {
+  user: compactUser,
+  assistant: compactAssistant,
+  shell: compactShell
+}
+
+function compactMessage(message: unknown): unknown | undefined {
+  const item = messageRecord(message)
+  const type = typeof item?.type === 'string' ? item.type : ''
+  const compacter = MESSAGE_COMPACTERS[type]
+  return item === undefined || compacter === undefined ? undefined : compacter(item)
+}
+
+function hasCollectedPath(key: string, item: unknown, output: Set<string>): boolean {
+  if (typeof item !== 'string') {
+    return false
+  }
+
+  if (!PATH_KEYS.has(key)) {
     return false
   }
 
@@ -82,15 +102,23 @@ function collectPathField(key: string, item: unknown, output: Set<string>): bool
   return true
 }
 
+function collectPathEntry(key: string, item: unknown, output: Set<string>): void {
+  if (hasCollectedPath(key, item, output)) {
+    return
+  }
+
+  if (item === undefined) {
+    return
+  }
+
+  if (NESTED_KEYS.has(key)) {
+    collectAuthorizedPaths(item, output)
+  }
+}
+
 function collectPathFields(value: Record<string, unknown>, output: Set<string>): void {
   for (const [key, item] of Object.entries(value)) {
-    if (collectPathField(key, item, output)) {
-      continue
-    }
-
-    if (NESTED_KEYS.includes(key) && item !== undefined) {
-      collectAuthorizedPaths(item, output)
-    }
+    collectPathEntry(key, item, output)
   }
 }
 
