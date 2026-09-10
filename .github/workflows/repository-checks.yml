@@ -2,7 +2,7 @@ name: Repository checks
 
 on:
   push:
-    branches: [master]
+    branches: [master, simplification]
   pull_request:
   workflow_dispatch:
 
