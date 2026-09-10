@@ -1,307 +1,315 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { Plugin } from '@opencode/plugin/effect'
+import type { Plugin } from '@opencode/plugin/effect'
 import { Effect, Schema } from 'effect'
 import {
-  addOwnership,
-  hasOwnership,
-  scanSkillTree,
-  skillDescription,
-  type FileManifest,
-  type ProposalMetadata,
-  PENDING_LIMIT,
-  type Store
-} from './store.ts'
+  boundPacket,
+  candidatePacket,
+  captureEvidence,
+  catalog,
+  ownedCandidates,
+  packetBytes,
+  selectCandidates,
+  type Candidate,
+  type Evidence
+} from './evidence.ts'
+import { materializeSkill, scanSkillTree } from './skill-files.ts'
+import { PENDING_LIMIT, type ProposalMetadata, type Store } from './store.ts'
 
-const GeneratedFile = Schema.Struct({
-  path: Schema.String,
-  content: Schema.String,
-  executable: Schema.Boolean
+const {
+  Array: arraySchema,
+  Boolean: booleanSchema,
+  Literals: literals,
+  String: stringSchema,
+  Struct: struct,
+  Union: union
+} = Schema
+const generatedFileSchema = struct({ path: stringSchema, content: stringSchema, executable: booleanSchema })
+const projectSourceSchema = struct({ from: literals(['project']), path: stringSchema })
+const candidateSourceSchema = struct({ from: literals(['candidate']), path: stringSchema })
+const sourceFileSchema = struct({
+  path: stringSchema,
+  source: union([projectSourceSchema, candidateSourceSchema])
 })
-const SourceFile = Schema.Struct({
-  path: Schema.String,
-  source: Schema.Union([
-    Schema.Struct({ from: Schema.Literals(['project']), path: Schema.String }),
-    Schema.Struct({ from: Schema.Literals(['candidate']), path: Schema.String })
-  ])
+const proposedSkillSchema = struct({
+  skillMd: stringSchema,
+  files: arraySchema(union([generatedFileSchema, sourceFileSchema]))
 })
-const ProposedSkill = Schema.Struct({ skillMd: Schema.String, files: Schema.Array(Schema.Union([GeneratedFile, SourceFile])) })
-const Reflection = Schema.Union([
-  Schema.Struct({ kind: Schema.Literals(['none']), reason: Schema.String }),
-  Schema.Struct({ kind: Schema.Literals(['create']), skillId: Schema.String, reason: Schema.String, skill: ProposedSkill }),
-  Schema.Struct({ kind: Schema.Literals(['patch']), skillId: Schema.String, reason: Schema.String, skill: ProposedSkill })
+const reflectionSchema = union([
+  struct({ kind: literals(['none']), reason: stringSchema }),
+  struct({
+    kind: literals(['create']),
+    skillId: stringSchema,
+    reason: stringSchema,
+    skill: proposedSkillSchema
+  }),
+  struct({
+    kind: literals(['patch']),
+    skillId: stringSchema,
+    reason: stringSchema,
+    skill: proposedSkillSchema
+  })
 ])
-const Validation = Schema.Struct({ accept: Schema.Boolean, reason: Schema.String })
+const validationSchema = struct({ accept: booleanSchema, reason: stringSchema })
+const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
+const REFLECTOR =
+  'Return exactly one JSON reflection. Choose only a reusable procedure supported by evidence; return none when none is justified.'
+const VALIDATOR =
+  'Return exactly {"accept":boolean,"reason":string}. Validate evidence support, usefulness, non-duplication, conservative generalization, consistency, and safety.'
+const encoder = new TextEncoder()
 
-type Reflection = typeof Reflection.Type
-type ProposedSkill = typeof ProposedSkill.Type
-type Candidate = {
-  id: string
-  description: string
-  markdown: string
-  manifest: FileManifest[]
-  revision: string
+type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
+type Reflection = typeof reflectionSchema.Type
+type ActiveReflection = Extract<Reflection, { kind: 'create' | 'patch' }>
+type GenerateResult = { text: string; model: string }
+type CatalogModel = {
+  id: unknown
+  providerID: unknown
+  limit: { input?: number; context: number; output: number }
 }
-type Evidence = { records: unknown[]; omitted: number; authorizedPaths: string[]; endCursor?: string }
+type ReflectionResult = {
+  reflection: Reflection
+  evidence: Evidence
+  candidates: Candidate[]
+  all: Candidate[]
+  model: string
+}
+
 export type ReviewResult =
   | { kind: 'none'; reason: string; endCursor?: string }
   | { kind: 'rejected'; reason: string; endCursor?: string }
   | { kind: 'cap'; endCursor?: string }
   | { kind: 'staged'; id: string; proposal: ProposalMetadata; endCursor?: string }
 
-const CONTROL = /^\/learn(?:\s|$|-)/v
-const MAX_GENERATED_FILE = 1024 * 1024
-const MAX_GENERATED_TOTAL = 10 * 1024 * 1024
-
-function tokens(text: string): Set<string> {
-  return new Set(text.toLowerCase().split(/[^a-z0-9]+/v).filter((item) => item.length > 2))
-}
-
-function compactAssistant(message: Record<string, unknown>): unknown {
-  const content = Array.isArray(message.content) ? message.content : []
-  return {
-    type: 'assistant',
-    content: content.flatMap((part) => {
-      if (typeof part !== 'object' || part === null) return []
-      const item = part as Record<string, unknown>
-      if (item.type === 'text') return [{ type: 'text', text: item.text }]
-      if (item.type !== 'tool') return []
-      const state = typeof item.state === 'object' && item.state !== null ? (item.state as Record<string, unknown>) : {}
-      return [{ tool: item.name, outcome: state.status, relevantInput: state.input, metadata: state.metadata }]
-    })
-  }
-}
-
-function compactMessage(message: unknown): unknown | undefined {
-  if (typeof message !== 'object' || message === null) return undefined
-  const item = message as Record<string, unknown>
-  if (item.type === 'user') {
-    const text = typeof item.text === 'string' ? item.text : ''
-    if (CONTROL.test(text)) return undefined
-    return { type: 'user', text, files: item.files }
-  }
-  if (item.type === 'assistant') return compactAssistant(item)
-  if (item.type === 'shell') return { type: 'shell', status: item.status, exit: item.exit }
-  return undefined
-}
-
-function collectAuthorizedPaths(value: unknown, out: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) collectAuthorizedPaths(item, out)
-    return
-  }
-  if (typeof value !== 'object' || value === null) return
-  for (const [key, item] of Object.entries(value)) {
-    if (['path', 'target', 'file'].includes(key) && typeof item === 'string') out.add(item)
-    else if (key === 'metadata' || key === 'content') collectAuthorizedPaths(item, out)
-  }
-}
-
-function evidenceFrom(messages: readonly unknown[], startAfter?: string): Evidence {
-  const start = startAfter ? messages.findIndex((message) => (message as { id?: string }).id === startAfter) + 1 : 0
-  const selected = messages.slice(Math.max(0, start))
-  const records = selected.flatMap((message) => {
-    const compacted = compactMessage(message)
-    return compacted === undefined ? [] : [compacted]
-  })
-  const authorized = new Set<string>()
-  for (const record of records) collectAuthorizedPaths(record, authorized)
-  const end = selected.at(-1) as { id?: string } | undefined
-  return { records, omitted: 0, authorizedPaths: [...authorized], endCursor: end?.id }
-}
-
-async function ownedCandidates(store: Store): Promise<Candidate[]> {
-  await fs.mkdir(store.projectSkills, { recursive: true })
-  const entries = await fs.readdir(store.projectSkills, { withFileTypes: true })
-  const candidates: Candidate[] = []
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue
-    const root = path.join(store.projectSkills, entry.name)
-    try {
-      const markdown = await fs.readFile(path.join(root, 'SKILL.md'), 'utf8')
-      if (!hasOwnership(markdown)) continue
-      const scan = await store.validateTree(root, true)
-      candidates.push({ id: entry.name, description: skillDescription(markdown), markdown, manifest: scan.files, revision: scan.revision })
-    } catch {
-      continue
-    }
-  }
-  return candidates.toSorted((a, b) => a.id.localeCompare(b.id))
-}
-
-function selectCandidates(all: Candidate[], evidence: Evidence): Candidate[] {
-  const evidenceText = JSON.stringify(evidence.records)
-  const words = tokens(evidenceText)
-  return all
-    .map((candidate) => ({
-      candidate,
-      explicit: evidenceText.includes(candidate.id),
-      overlap: [...tokens(`${candidate.id} ${candidate.description}`)].filter((word) => words.has(word)).length
-    }))
-    .filter((item) => item.explicit || item.overlap > 0)
-    .toSorted((a, b) => Number(b.explicit) - Number(a.explicit) || b.overlap - a.overlap || a.candidate.id.localeCompare(b.candidate.id))
-    .slice(0, 5)
-    .map((item) => item.candidate)
-}
-
-function candidatePacket(candidates: Candidate[]): unknown[] {
-  return candidates.map((candidate) => ({
-    id: candidate.id,
-    description: candidate.description,
-    skillMd: candidate.markdown,
-    revision: candidate.revision,
-    files: candidate.manifest.filter((file) => file.path !== 'SKILL.md')
-  }))
-}
-
-function decodeReflection(text: string): Reflection {
-  return Schema.decodeUnknownSync(Reflection)(JSON.parse(text))
-}
-
-function decodeValidation(text: string): typeof Validation.Type {
-  return Schema.decodeUnknownSync(Validation)(JSON.parse(text))
-}
-
-function reviewerPrompt(kind: 'reflector' | 'validator', packet: unknown): string {
-  const instruction =
-    kind === 'reflector'
-      ? 'Return exactly one JSON reflection. Choose only a reusable procedure supported by evidence; return none when none is justified.'
-      : 'Return exactly {"accept":boolean,"reason":string}. Validate evidence support, usefulness, non-duplication, conservative generalization, consistency, and safety.'
+function reviewerPrompt(instruction: string, packet: unknown): string {
   return `${instruction}\n\n${JSON.stringify(packet)}`
 }
 
-function isolatedGenerate(ctx: Plugin.Context, sessionID: string, makePrompt: () => Effect.Effect<string, unknown>) {
+function modelKey(model: { id: unknown; providerID: unknown; variant?: unknown }): string {
+  return JSON.stringify({ providerID: model.providerID, id: model.id, variant: model.variant })
+}
+
+function modelInputLimit(models: readonly CatalogModel[], model: { id: unknown; providerID: unknown }): number {
+  const found = models.find((item) => item.id === model.id && item.providerID === model.providerID)
+  if (found === undefined) {
+    throw new Error('selected model is absent from the current catalog')
+  }
+  return found.limit.input ?? Math.max(1, found.limit.context - found.limit.output)
+}
+
+function isolatedGenerate(
+  ctx: Plugin.Context,
+  sessionId: SessionId,
+  prepare: (messages: readonly unknown[], maxBytes: number) => string
+): Effect.Effect<GenerateResult, unknown> {
   return Effect.scoped(
     Effect.gen(function* () {
       const marker = `opencode-learning:${crypto.randomUUID()}`
-      let model = ''
-      let prompt = ''
-      const registration = yield* ctx.session.hook('generate', (request) =>
-        JSON.stringify(request.messages).includes(marker)
-          ? Effect.gen(function* () {
-              prompt = yield* makePrompt()
-              model = JSON.stringify(request.model)
-              request.system = []
-              request.tools = {}
-              request.messages = [{ role: 'user', content: prompt }]
-            })
-          : Effect.void
-      )
-      const result = yield* ctx.session.generate({ sessionID, prompt: marker })
+      const models = yield* ctx.catalog.model.list()
+      let capturedModel = ''
+      const registration = yield* ctx.session.hook('context', (request) => {
+        if (!JSON.stringify(request.messages).includes(marker)) {
+          return Effect.void
+        }
+        return ctx.session.context({ ['sessionID']: sessionId }).pipe(
+          Effect.map((messages) => {
+            const maxBytes = modelInputLimit(models.data, request.model)
+            const prompt = prepare(messages, maxBytes)
+            capturedModel = modelKey(request.model)
+            request.system = []
+            request.tools = {}
+            request.messages = [{ role: 'user', content: prompt }]
+          }),
+          Effect.orDie
+        )
+      })
+      const generated = yield* ctx.session.generate({ ['sessionID']: sessionId, prompt: marker })
       yield* registration.dispose
-      if (!model) return yield* Effect.fail(new Error('review generate hook did not capture request'))
-      return { text: result.text, model, prompt }
+      if (capturedModel === '') {
+        return yield* Effect.fail(new Error('review context hook did not capture generation'))
+      }
+      return { text: generated.text, model: capturedModel }
     })
   )
 }
 
-function safeDestination(root: string, relative: string): string {
-  if (relative === 'SKILL.md' || relative.startsWith('/') || relative.includes('\\') || relative.split('/').some((part) => !part || part === '.' || part === '..')) {
-    throw new Error(`invalid supporting file path: ${relative}`)
+function reflectionCapture(all: Candidate[], startAfter?: string) {
+  let evidence: Evidence = { records: [], omitted: 0, authorizedPaths: [] }
+  let candidates: Candidate[] = []
+  return {
+    prepare(messages: readonly unknown[], maxBytes: number): string {
+      const captured = captureEvidence(messages, startAfter)
+      const selected = selectCandidates(all, captured)
+      const overhead = encoder.encode(`${REFLECTOR}\n\n`).byteLength + 64
+      const bounded = boundPacket(captured, all, selected, Math.max(1, maxBytes - overhead))
+      evidence = bounded.evidence
+      candidates = bounded.candidates
+      return reviewerPrompt(REFLECTOR, {
+        evidence,
+        ownedSkills: catalog(all),
+        candidates: candidatePacket(candidates)
+      })
+    },
+    result: () => ({ evidence, candidates })
   }
-  const target = path.resolve(root, relative)
-  if (!target.startsWith(`${path.resolve(root)}${path.sep}`)) throw new Error('supporting file escapes skill root')
-  return target
 }
 
-async function materialize(
+function decodeReflection(text: string): Reflection {
+  return Schema.decodeUnknownSync(reflectionSchema)(JSON.parse(text))
+}
+
+function patchCandidate(reflection: Reflection, candidates: Candidate[]): Candidate | undefined {
+  if (reflection.kind !== 'patch') {
+    return undefined
+  }
+  const candidate = candidates.find((item) => item.id === reflection.skillId)
+  if (candidate === undefined) {
+    throw new Error('patch target was not a full candidate')
+  }
+  return candidate
+}
+
+function reflect(
+  ctx: Plugin.Context,
   store: Store,
-  proposal: Extract<Reflection, { kind: 'create' | 'patch' }>,
-  candidate: Candidate | undefined,
-  evidence: Evidence,
-  id: string
-): Promise<{ root: string; scan: Awaited<ReturnType<typeof scanSkillTree>> }> {
-  const root = path.join(store.temporary, id)
-  const skillRoot = path.join(root, 'skill')
-  await fs.mkdir(skillRoot, { recursive: true })
-  let generatedTotal = Buffer.byteLength(proposal.skill.skillMd)
-  await fs.writeFile(path.join(skillRoot, 'SKILL.md'), addOwnership(proposal.skill.skillMd))
-  for (const file of proposal.skill.files) {
-    const target = safeDestination(skillRoot, file.path)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    if ('content' in file) {
-      const size = Buffer.byteLength(file.content)
-      if (size > MAX_GENERATED_FILE) throw new Error('generated supporting file exceeds 1 MiB')
-      generatedTotal += size
-      if (generatedTotal > MAX_GENERATED_TOTAL) throw new Error('generated content exceeds 10 MiB')
-      await fs.writeFile(target, file.content, { mode: file.executable ? 0o755 : 0o644 })
-      continue
-    }
-    const source = file.source
-    const sourceRoot = source.from === 'candidate' ? (candidate ? path.join(store.projectSkills, candidate.id) : '') : store.project
-    if (source.from === 'candidate' && !candidate?.manifest.some((item) => item.path === source.path)) throw new Error('invalid candidate source')
-    const sourcePath = source.from === 'project' ? path.resolve(store.project, source.path) : path.join(sourceRoot, source.path)
-    if (!sourcePath.startsWith(`${path.resolve(sourceRoot)}${path.sep}`)) throw new Error('source escapes its root')
-    if (source.from === 'project' && !evidence.authorizedPaths.some((item) => path.resolve(store.project, item) === sourcePath)) throw new Error('project source was not authorized by structured evidence')
-    const stat = await fs.lstat(sourcePath)
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('source must be a regular non-symlink file')
-    await fs.copyFile(sourcePath, target)
-    await fs.chmod(target, stat.mode & 0o111 ? 0o755 : 0o644)
-  }
-  const scan = await store.validateTree(skillRoot, true)
-  return { root, scan }
+  sessionId: SessionId,
+  startAfter?: string
+): Effect.Effect<ReflectionResult, unknown> {
+  return Effect.gen(function* () {
+    const all = yield* Effect.promise(async () => ownedCandidates(store))
+    const capture = reflectionCapture(all, startAfter)
+    const generated = yield* isolatedGenerate(ctx, sessionId, capture.prepare)
+    const { evidence, candidates } = capture.result()
+    return { reflection: decodeReflection(generated.text), evidence, candidates, all, model: generated.model }
+  })
 }
 
-export function runReview(ctx: Plugin.Context, store: Store, sessionID: string, startAfter?: string): Effect.Effect<ReviewResult, unknown> {
+async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Promise<void> {
+  if (candidate === undefined) {
+    return
+  }
+  const current = await scanSkillTree(path.join(store.projectSkills, candidate.id))
+  if (current.revision !== candidate.revision) {
+    throw new Error('patch candidate changed during review')
+  }
+}
+
+function proposalFor(result: ReflectionResult, candidate?: Candidate): ProposalMetadata {
+  const reflection = result.reflection as ActiveReflection
+  return {
+    kind: reflection.kind,
+    skillId: reflection.skillId,
+    reason: reflection.reason,
+    evidence: result.evidence,
+    ...(candidate === undefined ? {} : { expectedRevision: candidate.revision })
+  }
+}
+
+function sourceSnapshots(reflection: ActiveReflection, files: readonly { path: string }[]) {
+  const sourcePaths = new Set(reflection.skill.files.filter((file) => 'source' in file).map((file) => file.path))
+  return files.filter((file) => sourcePaths.has(file.path))
+}
+
+function validatorPacket(result: ReflectionResult, files: readonly { path: string }[]) {
+  const reflection = result.reflection as ActiveReflection
+  return {
+    evidence: result.evidence,
+    ownedSkills: catalog(result.all),
+    candidates: candidatePacket(result.candidates),
+    proposal: { kind: reflection.kind, skillId: reflection.skillId },
+    skillMd: reflection.skill.skillMd,
+    generatedFiles: reflection.skill.files.filter((file) => 'content' in file),
+    sourceSnapshots: sourceSnapshots(reflection, files),
+    manifest: files
+  }
+}
+
+function validateReflection(reflection: ActiveReflection): void {
+  if (!SKILL_ID.test(reflection.skillId)) {
+    throw new Error('invalid reflected skill id')
+  }
+}
+
+function validateMaterialized(
+  ctx: Plugin.Context,
+  sessionId: SessionId,
+  result: ReflectionResult,
+  files: readonly { path: string }[]
+): Effect.Effect<typeof validationSchema.Type, unknown> {
+  const packet = validatorPacket(result, files)
+  return isolatedGenerate(ctx, sessionId, (_messages, maxBytes) => {
+    const prompt = reviewerPrompt(VALIDATOR, packet)
+    if (packetBytes(prompt) > maxBytes) {
+      throw new Error('validator request exceeds model input limit')
+    }
+    return prompt
+  }).pipe(
+    Effect.flatMap((generated) =>
+      generated.model === result.model
+        ? Effect.sync(() => Schema.decodeUnknownSync(validationSchema)(JSON.parse(generated.text)))
+        : Effect.fail(new Error('validator model differs from reflector model'))
+    )
+  )
+}
+
+function processReflection(
+  ctx: Plugin.Context,
+  store: Store,
+  sessionId: SessionId,
+  result: ReflectionResult
+): Effect.Effect<ReviewResult, unknown> {
+  if (result.reflection.kind === 'none') {
+    return Effect.succeed({ kind: 'none', reason: result.reflection.reason, endCursor: result.evidence.endCursor })
+  }
+  const reflection = result.reflection
   return Effect.gen(function* () {
-    let captured: Evidence = { records: [], omitted: 0, authorizedPaths: [] }
-    let chosen: Candidate[] = []
-    const all = yield* Effect.promise(() => ownedCandidates(store))
-    const reflectionCall = yield* isolatedGenerate(ctx, sessionID, () =>
-      Effect.gen(function* () {
-        const messages = yield* ctx.session.context({ sessionID })
-        captured = evidenceFrom(messages, startAfter)
-        chosen = selectCandidates(all, captured)
-        return reviewerPrompt('reflector', {
-          evidence: captured,
-          ownedSkills: all.map(({ id, description }) => ({ id, description })),
-          candidates: candidatePacket(chosen)
-        })
-      })
-    )
-    const reflection = decodeReflection(reflectionCall.text)
-    if (reflection.kind === 'none') return { kind: 'none', reason: reflection.reason, endCursor: captured.endCursor }
-    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/v.test(reflection.skillId)) throw new Error('invalid reflected skill id')
-    const candidate = reflection.kind === 'patch' ? chosen.find((item) => item.id === reflection.skillId) : undefined
-    if (reflection.kind === 'create') yield* Effect.promise(() => store.assertCreateAvailable(reflection.skillId))
-    if (reflection.kind === 'patch' && !candidate) throw new Error('patch target was not a full candidate')
-    if (candidate && (await Effect.promise(() => scanSkillTree(path.join(store.projectSkills, candidate.id)))).revision !== candidate.revision) throw new Error('patch candidate changed during review')
+    validateReflection(reflection)
+    const candidate = patchCandidate(reflection, result.candidates)
+    if (reflection.kind === 'create') {
+      yield* Effect.promise(async () => store.assertCreateAvailable(reflection.skillId))
+    }
+    yield* Effect.promise(async () => assertCandidateUnchanged(store, candidate))
     const id = crypto.randomUUID()
-    const materialized = yield* Effect.promise(() => materialize(store, reflection, candidate, captured, id))
-    const proposal: ProposalMetadata = {
-      kind: reflection.kind,
-      skillId: reflection.skillId,
-      reason: reflection.reason,
-      evidence: captured,
-      ...(candidate ? { expectedRevision: candidate.revision } : {})
-    }
-    const validationCall = yield* isolatedGenerate(ctx, sessionID, () =>
-      Effect.gen(function* () {
-        const skillMd = yield* Effect.promise(() => fs.readFile(path.join(materialized.root, 'skill', 'SKILL.md'), 'utf8'))
-        return reviewerPrompt('validator', {
-          evidence: captured,
-          ownedSkills: all.map(({ id: skillId, description }) => ({ id: skillId, description })),
-          candidates: candidatePacket(chosen),
-          proposal: { kind: reflection.kind, skillId: reflection.skillId },
-          skillMd,
-          manifest: materialized.scan.files
-        })
+    const candidateRoot = candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
+    const materialized = yield* Effect.promise(async () =>
+      materializeSkill({
+        project: store.project,
+        temporary: store.temporary,
+        id,
+        skill: reflection.skill,
+        authorizedPaths: result.evidence.authorizedPaths,
+        ...(candidate === undefined ? {} : { candidate: { root: candidateRoot ?? '', manifest: candidate.manifest } })
       })
     )
-    if (validationCall.model !== reflectionCall.model) throw new Error('validator model differs from reflector model')
-    const validation = decodeValidation(validationCall.text)
-    if (!validation.accept) {
-      yield* Effect.promise(() => fs.rm(materialized.root, { recursive: true, force: true }))
-      return { kind: 'rejected', reason: validation.reason, endCursor: captured.endCursor }
+    const finish = Effect.gen(function* () {
+      const validation = yield* validateMaterialized(ctx, sessionId, result, materialized.scan.files)
+      if (!validation.accept) {
+        return { kind: 'rejected', reason: validation.reason, endCursor: result.evidence.endCursor } as ReviewResult
+      }
+      if ((yield* Effect.promise(async () => store.pendingCount())) >= PENDING_LIMIT) {
+        return { kind: 'cap', endCursor: result.evidence.endCursor } as ReviewResult
+      }
+      const proposal = proposalFor(result, candidate)
+      yield* Effect.promise(async () => store.stage(proposal, materialized.root, id))
+      return { kind: 'staged', id, proposal, endCursor: result.evidence.endCursor } as ReviewResult
+    })
+    const cleanup = Effect.promise(async () => fs.rm(materialized.root, { recursive: true, force: true }))
+    return yield* finish.pipe(Effect.ensuring(cleanup))
+  })
+}
+
+export function runReview(
+  ctx: Plugin.Context,
+  store: Store,
+  sessionId: SessionId,
+  startAfter?: string
+): Effect.Effect<ReviewResult, unknown> {
+  return Effect.gen(function* () {
+    if ((yield* Effect.promise(async () => store.pendingCount())) >= PENDING_LIMIT) {
+      return { kind: 'cap', endCursor: startAfter }
     }
-    if ((yield* Effect.promise(() => store.pendingCount())) >= PENDING_LIMIT) {
-      yield* Effect.promise(() => fs.rm(materialized.root, { recursive: true, force: true }))
-      return { kind: 'cap', endCursor: captured.endCursor }
-    }
-    yield* Effect.promise(() => store.stage(proposal, materialized.root, id)).pipe(
-      Effect.tapError(() => Effect.promise(() => fs.rm(materialized.root, { recursive: true, force: true })))
-    )
-    return { kind: 'staged', id, proposal, endCursor: captured.endCursor }
+    const result = yield* reflect(ctx, store, sessionId, startAfter)
+    return yield* processReflection(ctx, store, sessionId, result)
   })
 }

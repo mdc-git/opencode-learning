@@ -29,7 +29,10 @@ export default defineConfig([
       },
       'boundaries/files': [
         { pattern: 'plugins/opencode-learning/index.ts', category: 'entry' },
-        { pattern: 'plugins/opencode-learning/{commands,review,store}.ts', category: 'core' }
+        {
+          pattern: 'plugins/opencode-learning/{commands,evidence,review,skill-files,store}.ts',
+          category: 'core'
+        }
       ]
     },
     plugins: {
