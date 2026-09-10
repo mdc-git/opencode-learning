@@ -2,9 +2,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { parseDocument } from 'yaml'
+import { addOwnership, hasOwnership, skillDescription } from './skill-markdown.ts'
 
-const OWNER_KEY = 'opencode-learning/owner'
 const FILE_LIMIT = 25 * 1024 * 1024
 const TREE_LIMIT = 100 * 1024 * 1024
 const GENERATED_FILE_LIMIT = 1024 * 1024
@@ -28,7 +27,7 @@ type ProposedFile =
   | { path: string; content: string; executable: boolean }
   | { path: string; source: { from: 'project' | 'candidate'; path: string } }
 
-type ProposedSkillFiles = { skillMd: string; files: ReadonlyArray<ProposedFile> }
+type ProposedSkillFiles = { skillMd: string; files: readonly ProposedFile[] }
 
 type MaterializeOptions = {
   project: string
@@ -139,72 +138,6 @@ export async function scanSkillTree(root: string): Promise<TreeScan> {
   return { files, totalSize, revision }
 }
 
-function frontmatterMatch(text: string): RegExpExecArray {
-  const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---\r?\n(?<body>[\s\S]*)$/v.exec(text)
-  if (match?.groups === undefined) {
-    throw new Error('SKILL.md requires YAML frontmatter')
-  }
-
-  return match
-}
-
-function frontmatterData(document: ReturnType<typeof parseDocument>): Record<string, unknown> {
-  if (document.errors.length > 0) {
-    throw new Error(`invalid SKILL.md frontmatter: ${document.errors[0]?.message}`)
-  }
-
-  const data = document.toJS() as unknown
-  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
-    throw new Error('skill frontmatter must be a mapping')
-  }
-
-  return data as Record<string, unknown>
-}
-
-function skillDocument(text: string) {
-  const match = frontmatterMatch(text)
-  const document = parseDocument(match.groups?.yaml ?? '')
-  return {
-    document,
-    data: frontmatterData(document),
-    body: match.groups?.body ?? ''
-  }
-}
-
-function requireDescription(data: Record<string, unknown>): string {
-  const { description } = data
-  if (typeof description !== 'string' || description.trim() === '') {
-    throw new Error('skill description is required')
-  }
-
-  return description
-}
-
-function addOwnership(text: string): string {
-  const { document, data, body } = skillDocument(text)
-  requireDescription(data)
-  const current = data.metadata
-  const metadata =
-    typeof current === 'object' && current !== null && !Array.isArray(current) ? current : {}
-  document.set('metadata', { ...(metadata as Record<string, unknown>), [OWNER_KEY]: 'true' })
-  return `---\n${String(document).trimEnd()}\n---\n${body}`
-}
-
-export function skillDescription(text: string): string {
-  return requireDescription(skillDocument(text).data)
-}
-
-export function hasOwnership(text: string): boolean {
-  const { data } = skillDocument(text)
-  requireDescription(data)
-  const { metadata } = data
-  return (
-    typeof metadata === 'object' &&
-    metadata !== null &&
-    (metadata as Record<string, unknown>)[OWNER_KEY] === 'true'
-  )
-}
-
 export async function validateSkillTree(root: string, isOwned: boolean): Promise<TreeScan> {
   const scan = await scanSkillTree(root)
   if (scan.files.every((file) => file.path !== 'SKILL.md')) {
@@ -212,7 +145,7 @@ export async function validateSkillTree(root: string, isOwned: boolean): Promise
   }
 
   const markdown = await fs.readFile(path.join(root, 'SKILL.md'), 'utf8')
-  requireDescription(skillDocument(markdown).data)
+  skillDescription(markdown)
   if (isOwned && !hasOwnership(markdown)) {
     throw new Error('skill is not owned by opencode-learning')
   }
@@ -245,7 +178,7 @@ export async function copySkillTree(source: string, destination: string): Promis
 }
 
 function isInvalidDestination(relative: string): boolean {
-  if (['SKILL.md'].includes(relative) || path.isAbsolute(relative) || relative.includes('\\')) {
+  if (relative === 'SKILL.md' || path.isAbsolute(relative) || relative.includes('\\')) {
     return true
   }
 
@@ -258,28 +191,42 @@ function generatedSizes(skill: ProposedSkillFiles): number[] {
     .map((file) => encoder.encode(file.content).byteLength)
 }
 
-function validateGenerated(skill: ProposedSkillFiles): void {
-  const sizes = generatedSizes(skill)
+function assertGeneratedFileSizes(sizes: number[]): void {
   if (sizes.some((size) => size > GENERATED_FILE_LIMIT)) {
     throw new Error('generated supporting file exceeds 1 MiB')
   }
+}
 
+function assertGeneratedTotal(skill: ProposedSkillFiles, sizes: number[]): void {
   const total = encoder.encode(skill.skillMd).byteLength + sizes.reduce((sum, size) => sum + size, 0)
   if (total > GENERATED_TOTAL_LIMIT) {
     throw new Error('generated content exceeds 10 MiB')
   }
+}
 
+function assertGeneratedPaths(skill: ProposedSkillFiles): void {
   const paths = skill.files.map((file) => file.path)
   const hasInvalidPath = paths.some((item) => isInvalidDestination(item))
-  if (new Set(paths).size !== paths.length || hasInvalidPath) {
+  if (hasInvalidPath || new Set(paths).size !== paths.length) {
     throw new Error('supporting file paths must be unique safe relative paths')
   }
 }
 
+function validateGenerated(skill: ProposedSkillFiles): void {
+  const sizes = generatedSizes(skill)
+  assertGeneratedFileSizes(sizes)
+  assertGeneratedTotal(skill, sizes)
+  assertGeneratedPaths(skill)
+}
+
 function candidateSource(options: MaterializeOptions, source: string): string {
   const { candidate } = options
-  const isKnown = candidate?.manifest.some((item) => item.path === source) === true
-  if (!isKnown || candidate === undefined) {
+  if (candidate === undefined) {
+    throw new Error('invalid candidate source')
+  }
+
+  const isKnown = candidate.manifest.some((item) => item.path === source)
+  if (!isKnown) {
     throw new Error('invalid candidate source')
   }
 
