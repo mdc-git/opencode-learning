@@ -60,7 +60,10 @@ function isLearningCommand(text: string): boolean {
 
 function passive(ctx: Plugin.Context, sessionRef: SessionRef, text: string) {
   const input = { ...sessionRef, text, resume: false }
-  return ctx.session.synthetic(input).pipe(Effect.asVoid, Effect.catch(() => Effect.void))
+  return ctx.session.synthetic(input).pipe(
+    Effect.asVoid,
+    Effect.catch(() => Effect.void)
+  )
 }
 
 function capWarning(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
@@ -109,7 +112,9 @@ function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: Sessio
 function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   return Effect.gen(function* () {
     state.successfulTurnsSinceReview = 0
-    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(Effect.orDie)
+    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(
+      Effect.orDie
+    )
     if (pending < PENDING_LIMIT) {
       state.pendingLimitNotified = false
     }
@@ -180,7 +185,10 @@ function baseline(runtime: Runtime) {
   })
 }
 
-function manualReview(runtime: Runtime, sessionId: SessionId): Effect.Effect<ReviewResult, unknown> {
+function manualReview(
+  runtime: Runtime,
+  sessionId: SessionId
+): Effect.Effect<ReviewResult, unknown> {
   const state = stateFor(runtime.states, sessionId)
   if (state.reviewFiber !== undefined) {
     return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })
@@ -213,9 +221,10 @@ function manualReview(runtime: Runtime, sessionId: SessionId): Effect.Effect<Rev
 }
 
 function shutdown(states: Map<SessionId, SessionState>) {
-  const fibers = states.values().flatMap((state) =>
-    state.reviewFiber === undefined ? [] : [state.reviewFiber]
-  ).toArray()
+  const fibers = states
+    .values()
+    .flatMap((state) => (state.reviewFiber === undefined ? [] : [state.reviewFiber]))
+    .toArray()
   return Fiber.interruptAll(fibers).pipe(
     Effect.ensuring(
       Effect.sync(() => {
@@ -235,9 +244,9 @@ export default Plugin.define({
         states: new Map()
       }
       yield* baseline(runtime)
-      yield* registerCommands(ctx, runtime.store, (sessionId) => manualReview(runtime, sessionId)).pipe(
-        Effect.orDie
-      )
+      yield* registerCommands(ctx, runtime.store, (sessionId) =>
+        manualReview(runtime, sessionId)
+      ).pipe(Effect.orDie)
       yield* ctx.event.subscribe().pipe(
         Stream.runForEach((event) => {
           if (event.type === 'session.execution.succeeded') {
