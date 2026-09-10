@@ -2,6 +2,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import {
+  decodeProposal,
+  isProposalId,
+  validSkillId,
+  type PendingProposal,
+  type ProposalMetadata
+} from './proposal.ts'
+import {
   copySkillTree,
   safeChild,
   scanSkillTree,
@@ -10,23 +17,8 @@ import {
   type TreeScan
 } from './skill-files.ts'
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/v
-const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
-const REVISION = /^[0-9a-f]{64}$/v
-const PROPOSAL_KEYS = new Set(['kind', 'skillId', 'reason', 'evidence', 'expectedRevision'])
 export const PENDING_LIMIT = 20
 
-export type ProposalMetadata = {
-  kind: 'create' | 'patch'
-  skillId: string
-  reason: string
-  evidence: unknown
-  expectedRevision?: string
-}
-
-export type PendingProposal = ProposalMetadata & { id: string; invalid?: boolean }
-
-type ProposalBase = Pick<ProposalMetadata, 'kind' | 'skillId' | 'reason' | 'evidence'>
 type StorePaths = {
   project: string
   projectSkills: string
@@ -89,7 +81,7 @@ async function pendingIds(paths: StorePaths): Promise<string[]> {
   await fs.mkdir(paths.pending, { recursive: true })
   const entries = await fs.readdir(paths.pending, { withFileTypes: true })
   return entries
-    .filter((entry) => entry.isDirectory() && UUID.test(entry.name))
+    .filter((entry) => entry.isDirectory() && isProposalId(entry.name))
     .map((entry) => entry.name)
 }
 
@@ -98,80 +90,8 @@ async function pendingCount(paths: StorePaths): Promise<number> {
   return ids.length
 }
 
-function proposalRecord(value: unknown): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('invalid proposal metadata')
-  }
-
-  const input = value as Record<string, unknown>
-  if (Object.keys(input).some((key) => !PROPOSAL_KEYS.has(key))) {
-    throw new Error('proposal metadata contains unsupported fields')
-  }
-
-  return input
-}
-
-function proposalKind(value: unknown): ProposalMetadata['kind'] {
-  if (value !== 'create' && value !== 'patch') {
-    throw new Error('invalid proposal kind')
-  }
-
-  return value
-}
-
-function proposalSkillId(value: unknown): string {
-  if (typeof value !== 'string' || !SKILL_ID.test(value)) {
-    throw new Error('invalid skill id')
-  }
-
-  return value
-}
-
-function proposalReason(value: unknown): string {
-  if (typeof value !== 'string') {
-    throw new Error('proposal reason is required')
-  }
-
-  return value
-}
-
-function proposalBase(input: Record<string, unknown>): ProposalBase {
-  if (!('evidence' in input)) {
-    throw new Error('proposal evidence is required')
-  }
-
-  return {
-    kind: proposalKind(input.kind),
-    skillId: proposalSkillId(input.skillId),
-    reason: proposalReason(input.reason),
-    evidence: input.evidence
-  }
-}
-
-function patchRevision(input: Record<string, unknown>): string {
-  if (typeof input.expectedRevision !== 'string' || !REVISION.test(input.expectedRevision)) {
-    throw new Error('patch expectedRevision is required')
-  }
-
-  return input.expectedRevision
-}
-
-function decodeProposal(value: unknown): ProposalMetadata {
-  const input = proposalRecord(value)
-  const proposal = proposalBase(input)
-  if (proposal.kind === 'create') {
-    if ('expectedRevision' in input) {
-      throw new Error('create proposal must not have expectedRevision')
-    }
-
-    return proposal
-  }
-
-  return { ...proposal, expectedRevision: patchRevision(input) }
-}
-
 async function readPending(paths: StorePaths, id: string): Promise<PendingProposal> {
-  if (!UUID.test(id)) {
+  if (!isProposalId(id)) {
     throw new Error('proposal id must be an exact UUID')
   }
 
@@ -264,7 +184,7 @@ async function stage(
 }
 
 async function assertCreateAvailable(paths: StorePaths, skillId: string): Promise<void> {
-  if (!SKILL_ID.test(skillId)) {
+  if (!validSkillId(skillId)) {
     throw new Error('invalid skill id')
   }
 
@@ -272,7 +192,7 @@ async function assertCreateAvailable(paths: StorePaths, skillId: string): Promis
     isPresent(safeChild(paths.projectSkills, skillId)),
     isPresent(safeChild(paths.globalSkills, skillId))
   ])
-  if (occupied.some(Boolean)) {
+  if (occupied.some((isOccupied) => isOccupied)) {
     throw new Error('skill id already exists')
   }
 }
@@ -321,7 +241,7 @@ async function removeGlobalTarget(target: string): Promise<void> {
 }
 
 async function promote(paths: StorePaths, skillId: string): Promise<void> {
-  if (!SKILL_ID.test(skillId)) {
+  if (!validSkillId(skillId)) {
     throw new Error('invalid skill id')
   }
 
@@ -347,7 +267,7 @@ export function createStore(project: string) {
     stage: async (metadata: ProposalMetadata, temporaryRoot: string, id: string) =>
       stage(paths, metadata, temporaryRoot, id),
     async reject(id: string) {
-      if (!UUID.test(id)) {
+      if (!isProposalId(id)) {
         throw new Error('proposal id must be an exact UUID')
       }
 
