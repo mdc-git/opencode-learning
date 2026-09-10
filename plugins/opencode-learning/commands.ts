@@ -6,12 +6,10 @@ import type { ReviewResult } from './review.ts'
 import type { Store } from './store.ts'
 
 type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
+type CommandEditor = Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]
+type Learn = (sessionId: SessionId) => Effect.Effect<ReviewResult, unknown>
 
-function emit(
-  ctx: Plugin.Context,
-  sessionId: SessionId,
-  text: string
-): Effect.Effect<void, unknown> {
+function emit(ctx: Plugin.Context, sessionId: SessionId, text: string): Effect.Effect<void, unknown> {
   return ctx.session.synthetic({ sessionID: sessionId, text, resume: false }).pipe(Effect.asVoid)
 }
 
@@ -33,18 +31,13 @@ function runCommand(
   sessionId: SessionId,
   effect: Effect.Effect<string, unknown>
 ): Effect.Effect<void, unknown> {
-  const rootOnly = ctx.session
-    .get({ sessionID: sessionId })
-    .pipe(
-      Effect.flatMap((session) =>
-        session.parentID === undefined
-          ? effect
-          : Effect.fail(new Error('learning commands are root-session-only'))
-      )
-    )
-
-  return rootOnly.pipe(
-    Effect.catchAll((error) =>
+  return ctx.session.get({ sessionID: sessionId }).pipe(
+    Effect.flatMap((session) =>
+      session.parentID === undefined
+        ? effect
+        : Effect.fail(new Error('learning commands are root-session-only'))
+    ),
+    Effect.catch((error) =>
       Effect.succeed(`error: ${error instanceof Error ? error.message : String(error)}`)
     ),
     Effect.flatMap((text) => emit(ctx, sessionId, text))
@@ -88,77 +81,91 @@ function storeEffect(operation: () => Promise<string>): Effect.Effect<string, un
   return Effect.tryPromise(async () => operation())
 }
 
-export function registerCommands(
-  ctx: Plugin.Context,
-  store: Store,
-  learn: (sessionId: SessionId) => Effect.Effect<ReviewResult, unknown>
-): Effect.Effect<void, unknown, unknown> {
+function addLearn(editor: CommandEditor, ctx: Plugin.Context, learn: Learn): void {
+  editor.add({
+    name: 'learn',
+    description: 'Review this root session for one reusable procedural skill.',
+    execute({ sessionID }) {
+      return runCommand(ctx, sessionID, learn(sessionID).pipe(Effect.map(resultText)))
+    }
+  })
+}
+
+function addPending(editor: CommandEditor, ctx: Plugin.Context, store: Store): void {
+  editor.add({
+    name: 'learn-pending',
+    description: 'List or inspect staged learning proposals.',
+    execute({ sessionID, prompt }) {
+      return runCommand(ctx, sessionID, storeEffect(async () => pendingText(store, prompt.text.trim())))
+    }
+  })
+}
+
+function addApprove(editor: CommandEditor, ctx: Plugin.Context, store: Store): void {
+  editor.add({
+    name: 'learn-approve',
+    description: 'Apply one exact staged proposal and reload skills.',
+    execute({ sessionID, prompt }) {
+      const id = prompt.text.trim()
+      const operation = storeEffect(async () => {
+        const skillId = await store.approve(id)
+        try {
+          await Effect.runPromise(ctx.skill.reload())
+          return `approved ${id}: ${skillId}`
+        } catch (error: unknown) {
+          return `approved ${id}: ${skillId}; skill reload failed: ${String(error)}`
+        }
+      })
+      return runCommand(ctx, sessionID, operation)
+    }
+  })
+}
+
+function addReject(editor: CommandEditor, ctx: Plugin.Context, store: Store): void {
+  editor.add({
+    name: 'learn-reject',
+    description: 'Delete one exact staged proposal.',
+    execute({ sessionID, prompt }) {
+      const id = prompt.text.trim()
+      return runCommand(
+        ctx,
+        sessionID,
+        storeEffect(async () => {
+          await store.reject(id)
+          return `rejected ${id}`
+        })
+      )
+    }
+  })
+}
+
+function addPromote(editor: CommandEditor, ctx: Plugin.Context, store: Store): void {
+  editor.add({
+    name: 'learn-promote',
+    description: 'Replace the global copy of one owned project skill.',
+    execute({ sessionID, prompt }) {
+      const skillId = prompt.text.trim()
+      return runCommand(
+        ctx,
+        sessionID,
+        storeEffect(async () => {
+          await store.promote(skillId)
+          await Effect.runPromise(ctx.skill.reload())
+          return `promoted ${skillId}`
+        })
+      )
+    }
+  })
+}
+
+export function registerCommands(ctx: Plugin.Context, store: Store, learn: Learn) {
   return ctx.command
     .transform((editor) => {
-      editor.add({
-        name: 'learn',
-        description: 'Review this root session for one reusable procedural skill.',
-        execute({ sessionID: sessionId }) {
-          return runCommand(ctx, sessionId, learn(sessionId).pipe(Effect.map(resultText)))
-        }
-      })
-      editor.add({
-        name: 'learn-pending',
-        description: 'List or inspect staged learning proposals.',
-        execute({ sessionID: sessionId, prompt }) {
-          const id = prompt.text.trim()
-          return runCommand(
-            ctx,
-            sessionId,
-            storeEffect(async () => pendingText(store, id))
-          )
-        }
-      })
-      editor.add({
-        name: 'learn-approve',
-        description: 'Apply one exact staged proposal and reload skills.',
-        execute({ sessionID: sessionId, prompt }) {
-          const id = prompt.text.trim()
-          const effect = storeEffect(async () => {
-            const skillId = await store.approve(id)
-            try {
-              await Effect.runPromise(ctx.skill.reload())
-              return `approved ${id}: ${skillId}`
-            } catch (error: unknown) {
-              return `approved ${id}: ${skillId}; skill reload failed: ${String(error)}`
-            }
-          })
-          return runCommand(ctx, sessionId, effect)
-        }
-      })
-      editor.add({
-        name: 'learn-reject',
-        description: 'Delete one exact staged proposal.',
-        execute({ sessionID: sessionId, prompt }) {
-          const id = prompt.text.trim()
-          return runCommand(
-            ctx,
-            sessionId,
-            storeEffect(async () => {
-              await store.reject(id)
-              return `rejected ${id}`
-            })
-          )
-        }
-      })
-      editor.add({
-        name: 'learn-promote',
-        description: 'Replace the global copy of one owned project skill.',
-        execute({ sessionID: sessionId, prompt }) {
-          const skillId = prompt.text.trim()
-          const effect = storeEffect(async () => {
-            await store.promote(skillId)
-            await Effect.runPromise(ctx.skill.reload())
-            return `promoted ${skillId}`
-          })
-          return runCommand(ctx, sessionId, effect)
-        }
-      })
+      addLearn(editor, ctx, learn)
+      addPending(editor, ctx, store)
+      addApprove(editor, ctx, store)
+      addReject(editor, ctx, store)
+      addPromote(editor, ctx, store)
     })
     .pipe(Effect.flatMap(() => ctx.command.reload()))
 }
