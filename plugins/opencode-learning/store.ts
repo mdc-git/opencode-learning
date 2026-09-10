@@ -13,6 +13,7 @@ import {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/v
 const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
 const REVISION = /^[0-9a-f]{64}$/v
+const PROPOSAL_KEYS = new Set(['kind', 'skillId', 'reason', 'evidence', 'expectedRevision'])
 export const PENDING_LIMIT = 20
 
 export type ProposalMetadata = {
@@ -25,6 +26,7 @@ export type ProposalMetadata = {
 
 export type PendingProposal = ProposalMetadata & { id: string; invalid?: boolean }
 
+type ProposalBase = Pick<ProposalMetadata, 'kind' | 'skillId' | 'reason' | 'evidence'>
 type StorePaths = {
   project: string
   projectSkills: string
@@ -52,18 +54,24 @@ async function isPresent(file: string): Promise<boolean> {
   }
 }
 
-function globalSkillsRoot(): string {
-  const config = process.env.XDG_CONFIG_HOME
-  if (config !== undefined && config !== '') {
-    return path.join(config, 'opencode', 'skills')
-  }
+function nonEmpty(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value
+}
 
-  const home = process.env.HOME
-  if (home === undefined || home === '') {
+function requiredHome(): string {
+  const home = nonEmpty(process.env.HOME)
+  if (home === undefined) {
     throw new Error('HOME is required when XDG_CONFIG_HOME is unset')
   }
 
-  return path.join(home, '.config', 'opencode', 'skills')
+  return home
+}
+
+function globalSkillsRoot(): string {
+  const config = nonEmpty(process.env.XDG_CONFIG_HOME)
+  return config === undefined
+    ? path.join(requiredHome(), '.config', 'opencode', 'skills')
+    : path.join(config, 'opencode', 'skills')
 }
 
 function storePaths(project: string): StorePaths {
@@ -85,39 +93,67 @@ async function pendingIds(paths: StorePaths): Promise<string[]> {
     .map((entry) => entry.name)
 }
 
+async function pendingCount(paths: StorePaths): Promise<number> {
+  const ids = await pendingIds(paths)
+  return ids.length
+}
+
 function proposalRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('invalid proposal metadata')
   }
 
   const input = value as Record<string, unknown>
-  const allowed = new Set(['kind', 'skillId', 'reason', 'evidence', 'expectedRevision'])
-  if (Object.keys(input).some((key) => !allowed.has(key))) {
+  if (Object.keys(input).some((key) => !PROPOSAL_KEYS.has(key))) {
     throw new Error('proposal metadata contains unsupported fields')
   }
 
   return input
 }
 
-function proposalBase(input: Record<string, unknown>) {
-  if (input.kind !== 'create' && input.kind !== 'patch') {
+function proposalKind(value: unknown): ProposalMetadata['kind'] {
+  if (value !== 'create' && value !== 'patch') {
     throw new Error('invalid proposal kind')
   }
 
-  if (typeof input.skillId !== 'string' || !SKILL_ID.test(input.skillId)) {
+  return value
+}
+
+function proposalSkillId(value: unknown): string {
+  if (typeof value !== 'string' || !SKILL_ID.test(value)) {
     throw new Error('invalid skill id')
   }
 
-  if (typeof input.reason !== 'string' || !('evidence' in input)) {
-    throw new Error('proposal reason and evidence are required')
+  return value
+}
+
+function proposalReason(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('proposal reason is required')
+  }
+
+  return value
+}
+
+function proposalBase(input: Record<string, unknown>): ProposalBase {
+  if (!('evidence' in input)) {
+    throw new Error('proposal evidence is required')
   }
 
   return {
-    kind: input.kind,
-    skillId: input.skillId,
-    reason: input.reason,
+    kind: proposalKind(input.kind),
+    skillId: proposalSkillId(input.skillId),
+    reason: proposalReason(input.reason),
     evidence: input.evidence
   }
+}
+
+function patchRevision(input: Record<string, unknown>): string {
+  if (typeof input.expectedRevision !== 'string' || !REVISION.test(input.expectedRevision)) {
+    throw new Error('patch expectedRevision is required')
+  }
+
+  return input.expectedRevision
 }
 
 function decodeProposal(value: unknown): ProposalMetadata {
@@ -131,11 +167,7 @@ function decodeProposal(value: unknown): ProposalMetadata {
     return proposal
   }
 
-  if (typeof input.expectedRevision !== 'string' || !REVISION.test(input.expectedRevision)) {
-    throw new Error('patch expectedRevision is required')
-  }
-
-  return { ...proposal, expectedRevision: input.expectedRevision }
+  return { ...proposal, expectedRevision: patchRevision(input) }
 }
 
 async function readPending(paths: StorePaths, id: string): Promise<PendingProposal> {
@@ -172,7 +204,7 @@ async function listPending(paths: StorePaths): Promise<PendingProposal[]> {
   return entries.toSorted((left, right) => right.mtime - left.mtime).map((entry) => entry.proposal)
 }
 
-function sameFile(left: FileManifest, right: FileManifest): boolean {
+function isSameFile(left: FileManifest, right: FileManifest): boolean {
   return left.hash === right.hash && left.executable === right.executable
 }
 
@@ -182,7 +214,7 @@ function fileStatuses(staged: TreeScan, current?: TreeScan): string[] {
   const present = staged.files.map((file) => {
     const previous = currentFiles.get(file.path)
     const status =
-      previous === undefined ? 'added' : sameFile(file, previous) ? 'unchanged' : 'changed'
+      previous === undefined ? 'added' : isSameFile(file, previous) ? 'unchanged' : 'changed'
     return `${status} ${file.path}`
   })
   const removed = (current?.files ?? [])
@@ -215,7 +247,7 @@ async function stage(
   temporaryRoot: string,
   id: string
 ): Promise<void> {
-  if ((await pendingIds(paths)).length >= PENDING_LIMIT) {
+  if ((await pendingCount(paths)) >= PENDING_LIMIT) {
     throw new Error('pending proposal limit reached')
   }
 
@@ -224,11 +256,9 @@ async function stage(
     throw new Error('proposal id collision')
   }
 
-  await fs.writeFile(
-    path.join(temporaryRoot, 'proposal.json'),
-    `${JSON.stringify(metadata, null, 2)}\n`,
-    { mode: 0o644 }
-  )
+  await fs.writeFile(path.join(temporaryRoot, 'proposal.json'), `${JSON.stringify(metadata, null, 2)}\n`, {
+    mode: 0o644
+  })
   await fs.mkdir(path.dirname(destination), { recursive: true })
   await fs.rename(temporaryRoot, destination)
 }
@@ -310,7 +340,7 @@ export function createStore(project: string) {
   const paths = storePaths(project)
   return {
     ...paths,
-    pendingCount: async () => (await pendingIds(paths)).length,
+    pendingCount: async () => pendingCount(paths),
     listPending: async () => listPending(paths),
     readPending: async (id: string) => readPending(paths, id),
     patchStatus: async (proposal: PendingProposal) => patchStatus(paths, proposal),
