@@ -6,15 +6,15 @@ import { createStore, PENDING_LIMIT, type Store } from './store.ts'
 
 const SUCCESSFUL_TURNS_PER_REVIEW = 3
 
-type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
-type ReviewFiber = Fiber.Fiber<ReviewResult, unknown>
+type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
+type SessionId = SessionRef['sessionID']
+type ReviewFiber = Fiber.Fiber<unknown, unknown>
 type SessionState = {
   reviewCursor?: string
   successfulTurnsSinceReview: number
   pendingLimitNotified: boolean
   reviewFiber?: ReviewFiber
 }
-
 type Runtime = {
   ctx: Plugin.Context
   store: Store
@@ -58,38 +58,32 @@ function isLearningCommand(text: string): boolean {
   return /^\/learn(?:\s|$|-)/v.test(text.trim())
 }
 
-function passive(ctx: Plugin.Context, sessionId: SessionId, text: string): Effect.Effect<void> {
-  return ctx.session.synthetic({ sessionID: sessionId, text, resume: false }).pipe(
-    Effect.asVoid,
-    Effect.catchAll(() => Effect.void)
-  )
+function passive(ctx: Plugin.Context, sessionRef: SessionRef, text: string) {
+  const input = { ...sessionRef, text, resume: false }
+  return ctx.session.synthetic(input).pipe(Effect.asVoid, Effect.catch(() => Effect.void))
 }
 
-function capWarning(
-  runtime: Runtime,
-  sessionId: SessionId,
-  state: SessionState
-): Effect.Effect<void> {
+function capWarning(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   if (state.pendingLimitNotified) {
     return Effect.void
   }
 
   state.pendingLimitNotified = true
-  return passive(runtime.ctx, sessionId, 'pending proposal limit reached')
+  return passive(runtime.ctx, sessionRef, 'pending proposal limit reached')
 }
 
 function finishAutomatic(
   runtime: Runtime,
-  sessionId: SessionId,
+  sessionRef: SessionRef,
   state: SessionState,
   result: ReviewResult
-): Effect.Effect<void> {
+) {
   if (result.endCursor !== undefined) {
     state.reviewCursor = result.endCursor
   }
 
   if (result.kind === 'cap') {
-    return capWarning(runtime, sessionId, state)
+    return capWarning(runtime, sessionRef, state)
   }
 
   if (result.kind !== 'staged') {
@@ -97,17 +91,13 @@ function finishAutomatic(
   }
 
   const text = `${result.id} ${result.proposal.kind} ${result.proposal.skillId}\n/learn-pending ${result.id}`
-  return passive(runtime.ctx, sessionId, text)
+  return passive(runtime.ctx, sessionRef, text)
 }
 
-function automaticReview(
-  runtime: Runtime,
-  sessionId: SessionId,
-  state: SessionState
-): Effect.Effect<void> {
-  return runReview(runtime.ctx, runtime.store, sessionId, state.reviewCursor).pipe(
-    Effect.flatMap((result) => finishAutomatic(runtime, sessionId, state, result)),
-    Effect.catchAll(() => Effect.void),
+function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+  return runReview(runtime.ctx, runtime.store, sessionRef.sessionID, state.reviewCursor).pipe(
+    Effect.flatMap((result) => finishAutomatic(runtime, sessionRef, state, result)),
+    Effect.catch(() => Effect.void),
     Effect.ensuring(
       Effect.sync(() => {
         state.reviewFiber = undefined
@@ -116,43 +106,36 @@ function automaticReview(
   )
 }
 
-function startAutomatic(
-  runtime: Runtime,
-  sessionId: SessionId,
-  state: SessionState
-): Effect.Effect<void> {
+function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   return Effect.gen(function* () {
     state.successfulTurnsSinceReview = 0
-    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(
-      Effect.orDie
-    )
+    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(Effect.orDie)
     if (pending < PENDING_LIMIT) {
       state.pendingLimitNotified = false
     }
 
     if (pending >= PENDING_LIMIT) {
-      yield* capWarning(runtime, sessionId, state)
+      yield* capWarning(runtime, sessionRef, state)
       return
     }
 
-    const fiber = yield* Effect.forkScoped(automaticReview(runtime, sessionId, state))
-    state.reviewFiber = fiber
+    state.reviewFiber = yield* Effect.forkDetach(automaticReview(runtime, sessionRef, state))
   })
 }
 
-function primarySuccess(runtime: Runtime, sessionId: SessionId): Effect.Effect<void> {
+function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {
   return Effect.gen(function* () {
-    const session = yield* runtime.ctx.session.get({ sessionID: sessionId }).pipe(Effect.orDie)
+    const session = yield* runtime.ctx.session.get(sessionRef).pipe(Effect.orDie)
     if (session.parentID !== undefined) {
       return
     }
 
-    const messages = yield* runtime.ctx.session.context({ sessionID: sessionId }).pipe(Effect.orDie)
+    const messages = yield* runtime.ctx.session.context(sessionRef).pipe(Effect.orDie)
     if (isLearningCommand(latestUserText(messages))) {
       return
     }
 
-    const state = stateFor(runtime.states, sessionId)
+    const state = stateFor(runtime.states, sessionRef.sessionID)
     state.successfulTurnsSinceReview += 1
     if (
       state.successfulTurnsSinceReview < SUCCESSFUL_TURNS_PER_REVIEW ||
@@ -161,11 +144,11 @@ function primarySuccess(runtime: Runtime, sessionId: SessionId): Effect.Effect<v
       return
     }
 
-    yield* startAutomatic(runtime, sessionId, state)
-  }).pipe(Effect.catchAllCause(() => Effect.void))
+    yield* startAutomatic(runtime, sessionRef, state)
+  }).pipe(Effect.catchCause(() => Effect.void))
 }
 
-function deleteSession(runtime: Runtime, sessionId: SessionId): Effect.Effect<void> {
+function deleteSession(runtime: Runtime, sessionId: SessionId) {
   const state = runtime.states.get(sessionId)
   runtime.states.delete(sessionId)
   return state?.reviewFiber === undefined
@@ -173,50 +156,31 @@ function deleteSession(runtime: Runtime, sessionId: SessionId): Effect.Effect<vo
     : Fiber.interrupt(state.reviewFiber).pipe(Effect.asVoid)
 }
 
-function handleEvent(
-  runtime: Runtime,
-  event: { type: string; data?: { sessionID?: SessionId } }
-): Effect.Effect<void> {
-  const sessionId = event.data?.sessionID
-  if (sessionId === undefined) {
-    return Effect.void
-  }
-
-  if (event.type === 'session.execution.succeeded') {
-    return primarySuccess(runtime, sessionId)
-  }
-
-  return event.type === 'session.deleted' ? deleteSession(runtime, sessionId) : Effect.void
-}
-
-function baseline(runtime: Runtime): Effect.Effect<void, never, unknown> {
+function baseline(runtime: Runtime) {
   return runtime.ctx.session.hook('context', (request) => {
     if (runtime.states.has(request.sessionID)) {
       return Effect.void
     }
 
-    return runtime.ctx.session.get({ sessionID: request.sessionID }).pipe(
+    return runtime.ctx.session.get(request).pipe(
       Effect.flatMap((session) =>
-        session.parentID === undefined
-          ? runtime.ctx.session.context({ sessionID: request.sessionID })
-          : Effect.succeed([])
+        session.parentID === undefined ? runtime.ctx.session.context(request) : Effect.succeed([])
       ),
-      Effect.tap((messages) => {
-        if (messages.length > 0) {
-          stateFor(runtime.states, request.sessionID).reviewCursor =
-            cursorBeforeLatestUser(messages)
-        }
-      }),
+      Effect.tap((messages) =>
+        Effect.sync(() => {
+          if (messages.length > 0) {
+            stateFor(runtime.states, request.sessionID).reviewCursor =
+              cursorBeforeLatestUser(messages)
+          }
+        })
+      ),
       Effect.asVoid,
-      Effect.catchAll(() => Effect.void)
+      Effect.catch(() => Effect.void)
     )
   })
 }
 
-function manualReview(
-  runtime: Runtime,
-  sessionId: SessionId
-): Effect.Effect<ReviewResult, unknown> {
+function manualReview(runtime: Runtime, sessionId: SessionId): Effect.Effect<ReviewResult, unknown> {
   const state = stateFor(runtime.states, sessionId)
   if (state.reviewFiber !== undefined) {
     return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })
@@ -237,7 +201,7 @@ function manualReview(
         })
       )
     )
-    const fiber = yield* Effect.forkScoped(review)
+    const fiber = yield* Effect.forkDetach(review)
     state.reviewFiber = fiber
     const result = yield* Fiber.join(fiber)
     if (result.endCursor !== undefined) {
@@ -248,10 +212,10 @@ function manualReview(
   })
 }
 
-function shutdown(states: Map<SessionId, SessionState>): Effect.Effect<void> {
-  const fibers = [...states.values()].flatMap((state) =>
+function shutdown(states: Map<SessionId, SessionState>) {
+  const fibers = states.values().flatMap((state) =>
     state.reviewFiber === undefined ? [] : [state.reviewFiber]
-  )
+  ).toArray()
   return Fiber.interruptAll(fibers).pipe(
     Effect.ensuring(
       Effect.sync(() => {
@@ -271,11 +235,21 @@ export default Plugin.define({
         states: new Map()
       }
       yield* baseline(runtime)
-      yield* registerCommands(ctx, runtime.store, (sessionId) =>
-        manualReview(runtime, sessionId)
-      ).pipe(Effect.orDie)
+      yield* registerCommands(ctx, runtime.store, (sessionId) => manualReview(runtime, sessionId)).pipe(
+        Effect.orDie
+      )
       yield* ctx.event.subscribe().pipe(
-        Stream.runForEach((event) => handleEvent(runtime, event)),
+        Stream.runForEach((event) => {
+          if (event.type === 'session.execution.succeeded') {
+            return primarySuccess(runtime, event.data)
+          }
+
+          if (event.type === 'session.deleted') {
+            return deleteSession(runtime, event.data.sessionID)
+          }
+
+          return Effect.void
+        }),
         Effect.forkScoped
       )
       yield* Effect.addFinalizer(() => shutdown(runtime.states))
