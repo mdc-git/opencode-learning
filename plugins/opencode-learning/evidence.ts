@@ -88,6 +88,7 @@ function collectAuthorizedPaths(value: unknown, output: Set<string>): void {
     for (const item of value) {
       collectAuthorizedPaths(item, output)
     }
+
     return
   }
 
@@ -117,6 +118,7 @@ export function captureEvidence(messages: readonly unknown[], startAfter?: strin
   for (const record of records) {
     collectAuthorizedPaths(record, authorized)
   }
+
   return {
     records,
     omitted: 0,

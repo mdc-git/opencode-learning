@@ -28,6 +28,7 @@ async function api(base, requestPath, options = {}) {
   if (!response.ok) {
     throw new Error(`${response.status}: ${await response.text()}`)
   }
+
   return response.status === 204 ? undefined : response.json()
 }
 
@@ -78,6 +79,7 @@ async function stopServer(server) {
   if (server.exitCode !== null) {
     return
   }
+
   server.kill('SIGTERM')
   const closed = await Promise.race([
     once(server, 'close').then(() => true),
@@ -104,6 +106,7 @@ async function waitForPlugin(base, project) {
     ) {
       return plugin
     }
+
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
@@ -194,6 +197,7 @@ test('package-root plugin exposes only the current learning surface and stages e
     if (server) {
       await stopServer(server)
     }
+
     await rm(root, { recursive: true, force: true })
   }
 })

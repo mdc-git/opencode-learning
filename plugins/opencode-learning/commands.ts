@@ -9,7 +9,11 @@ type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
 type CommandEditor = Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]
 type Learn = (sessionId: SessionId) => Effect.Effect<ReviewResult, unknown>
 
-function emit(ctx: Plugin.Context, sessionId: SessionId, text: string): Effect.Effect<void, unknown> {
+function emit(
+  ctx: Plugin.Context,
+  sessionId: SessionId,
+  text: string
+): Effect.Effect<void, unknown> {
   return ctx.session.synthetic({ sessionID: sessionId, text, resume: false }).pipe(Effect.asVoid)
 }
 
@@ -96,7 +100,11 @@ function addPending(editor: CommandEditor, ctx: Plugin.Context, store: Store): v
     name: 'learn-pending',
     description: 'List or inspect staged learning proposals.',
     execute({ sessionID, prompt }) {
-      return runCommand(ctx, sessionID, storeEffect(async () => pendingText(store, prompt.text.trim())))
+      return runCommand(
+        ctx,
+        sessionID,
+        storeEffect(async () => pendingText(store, prompt.text.trim()))
+      )
     }
   })
 }

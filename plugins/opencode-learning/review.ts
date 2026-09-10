@@ -128,9 +128,7 @@ function isolatedGenerate(
             capturedModel = modelKey(request.model)
             request.system = []
             request.tools = {}
-            request.messages = [
-              { role: 'user', content: [{ type: 'text', text: prompt }] }
-            ]
+            request.messages = [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
           }),
           Effect.orDie
         )
@@ -298,7 +296,7 @@ function processReflection(
     })
   }
 
-  const reflection = result.reflection
+  const { reflection } = result
   return Effect.gen(function* () {
     validateReflection(reflection)
     const candidate = patchCandidate(reflection, result.candidates)
