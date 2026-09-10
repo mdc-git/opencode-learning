@@ -13,11 +13,11 @@ export default defineConfig([
   }),
 
   {
-    ignores: ['node_modules/**', '.opencode/**', 'AGENTS.md', 'REVIEW.md', 'SCORING.md']
+    ignores: ['node_modules/**', '.opencode/**', 'AGENTS.md']
   },
 
   {
-    files: ['**/*.{ts,tsx,mjs,js}'],
+    files: ['**/*.{ts,mjs,js}'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
@@ -28,8 +28,12 @@ export default defineConfig([
         typescript: true
       },
       'boundaries/files': [
-        { pattern: 'plugins/opencode-learning/index.ts', category: 'entry' },
-        { pattern: 'plugins/opencode-learning/scoring.ts', category: 'core' }
+        { pattern: 'index.ts', category: 'entry' },
+        {
+          pattern:
+            'plugins/opencode-learning/{candidates,commands,evidence,index,proposal,review,review-generate,review-packet,review-schema,skill-files,skill-markdown,skill-tree,store}.ts',
+          category: 'core'
+        }
       ]
     },
     plugins: {
@@ -81,7 +85,7 @@ export default defineConfig([
   {
     files: ['package.json'],
     rules: {
-      'package-json/dependency-version-range': ['error', { exceptions: ['@opencode-ai/plugin'] }],
+      'package-json/dependency-version-range': ['error', { exceptions: ['effect'] }],
       'package-json/no-dist-tag-dependencies': 'off'
     }
   }

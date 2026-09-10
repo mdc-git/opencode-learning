@@ -1,164 +1,283 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import process from 'node:process'
 import {
-  assertNoSymlinkPath,
-  atomicWrite,
-  hasErrorCode,
-  isSafeId,
-  nowIso,
-  sha256
-} from './shared.ts'
+  decodeProposal,
+  isProposalId,
+  isSkillId,
+  type PendingProposal,
+  type ProposalMetadata
+} from './proposal.ts'
 import {
-  applyOperations,
-  bumpVersion,
-  ensureSupportingFilesAbsent,
-  listSupportingFiles,
-  reserveDirectory,
-  supportPath,
-  yamlScalar
-} from './store-files.ts'
-import type { OwnedSkill, Proposal, SupportingFile } from './types.ts'
+  copySkillTree,
+  safeChild,
+  scanSkillTree,
+  validateSkillTree,
+  type FileManifest,
+  type TreeScan
+} from './skill-tree.ts'
 
-const OWNER_MARKER = 'learning/owner: "opencode-learning"'
+export const PENDING_LIMIT = 20
 
-export class SkillStore {
-  readonly projectRootSkills: string
-  readonly globalRootSkills: string
-  readonly stateRoot: string
-  readonly pendingRoot: string
-  readonly archiveRoot: string
+type StorePaths = {
+  project: string
+  projectSkills: string
+  globalSkills: string
+  pending: string
+  temporary: string
+}
 
-  constructor({
-    projectRoot,
-    projectSkillDir,
-    globalSkillDir,
-    stateDir
-  }: {
-    projectRoot: string
-    projectSkillDir: string
-    globalSkillDir: string
-    stateDir: string
-  }) {
-    this.projectRootSkills = path.resolve(projectRoot, projectSkillDir)
-    this.globalRootSkills = path.resolve(globalSkillDir)
-    this.stateRoot = path.resolve(projectRoot, stateDir)
-    this.pendingRoot = path.join(this.stateRoot, 'pending')
-    this.archiveRoot = path.join(this.stateRoot, 'archive')
-  }
+export type Store = ReturnType<typeof createStore>
 
-  root(scope: string): string {
-    return scope === 'global' ? this.globalRootSkills : this.projectRootSkills
-  }
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error ? String(error.code) : undefined
+}
 
-  skillDir(skillId: string, scope: string): string {
-    if (!isSafeId(skillId)) {
-      throw new Error(`invalid skill id: ${skillId}`)
+async function isPresent(file: string): Promise<boolean> {
+  try {
+    await fs.lstat(file)
+    return true
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') {
+      return false
     }
 
-    return path.join(this.root(scope), skillId)
+    throw error
+  }
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  return value === undefined || value === '' ? undefined : value
+}
+
+function requiredHome(): string {
+  const home = nonEmpty(process.env.HOME)
+  if (home === undefined) {
+    throw new Error('HOME is required when XDG_CONFIG_HOME is unset')
   }
 
-  async getOwned(skillId: string, scope: string): Promise<OwnedSkill | undefined> {
-    const file = path.join(this.skillDir(skillId, scope), 'SKILL.md')
-    await assertNoSymlinkPath(file)
-    try {
-      const text = await fs.readFile(file, 'utf8')
-      if (!text.includes(OWNER_MARKER)) {
-        return undefined
-      }
+  return home
+}
 
-      return {
-        skillId,
-        scope,
-        file,
-        dir: path.dirname(file),
-        text,
-        sha256: sha256(text),
-        supportingFiles: await listSupportingFiles(path.dirname(file))
-      }
-    } catch (error: unknown) {
-      if (hasErrorCode(error, 'ENOENT')) {
-        return undefined
-      }
+function globalSkillsRoot(): string {
+  const config = nonEmpty(process.env.XDG_CONFIG_HOME)
+  return config === undefined
+    ? path.join(requiredHome(), '.config', 'opencode', 'skills')
+    : path.join(config, 'opencode', 'skills')
+}
 
-      throw error
+function storePaths(project: string): StorePaths {
+  const learning = path.join(project, '.opencode', '.learning')
+  return {
+    project,
+    projectSkills: path.join(project, '.opencode', 'skills'),
+    globalSkills: globalSkillsRoot(),
+    pending: path.join(learning, 'pending'),
+    temporary: path.join(learning, 'tmp')
+  }
+}
+
+async function pendingIds(paths: StorePaths): Promise<string[]> {
+  await fs.mkdir(paths.pending, { recursive: true })
+  const entries = await fs.readdir(paths.pending, { withFileTypes: true })
+  return entries
+    .filter((entry) => entry.isDirectory() && isProposalId(entry.name))
+    .map((entry) => entry.name)
+}
+
+async function pendingCount(paths: StorePaths): Promise<number> {
+  const ids = await pendingIds(paths)
+  return ids.length
+}
+
+async function readPending(paths: StorePaths, id: string): Promise<PendingProposal> {
+  if (!isProposalId(id)) {
+    throw new Error('proposal id must be an exact UUID')
+  }
+
+  const directory = safeChild(paths.pending, id)
+  const text = await fs.readFile(path.join(directory, 'proposal.json'), 'utf8')
+  return { id, ...decodeProposal(JSON.parse(text)) }
+}
+
+async function pendingEntry(paths: StorePaths, id: string) {
+  const directory = safeChild(paths.pending, id)
+  const stat = await fs.stat(directory)
+  try {
+    return { mtime: stat.mtimeMs, proposal: await readPending(paths, id) }
+  } catch {
+    const proposal: PendingProposal = {
+      id,
+      kind: 'create',
+      skillId: '<invalid>',
+      reason: '<invalid>',
+      evidence: [],
+      invalid: true
     }
+    return { mtime: stat.mtimeMs, proposal }
+  }
+}
+
+async function listPending(paths: StorePaths): Promise<PendingProposal[]> {
+  const ids = await pendingIds(paths)
+  const entries = await Promise.all(ids.map(async (id) => pendingEntry(paths, id)))
+  return entries.toSorted((left, right) => right.mtime - left.mtime).map((entry) => entry.proposal)
+}
+
+function isSameFile(left: FileManifest, right: FileManifest): boolean {
+  return left.hash === right.hash && left.executable === right.executable
+}
+
+function fileStatuses(staged: TreeScan, current?: TreeScan): string[] {
+  const currentFiles = new Map(current?.files.map((file) => [file.path, file]))
+  const stagedFiles = new Set(staged.files.map((file) => file.path))
+  const present = staged.files.map((file) => {
+    const previous = currentFiles.get(file.path)
+    const status =
+      previous === undefined ? 'added' : isSameFile(file, previous) ? 'unchanged' : 'changed'
+    return `${status} ${file.path}`
+  })
+  const removed = (current?.files ?? [])
+    .filter((file) => !stagedFiles.has(file.path))
+    .map((file) => `removed ${file.path}`)
+  return [...present, ...removed]
+}
+
+async function patchStatus(paths: StorePaths, proposal: PendingProposal) {
+  const stagedRoot = path.join(safeChild(paths.pending, proposal.id), 'skill')
+  const staged = await validateSkillTree(stagedRoot, false)
+  if (proposal.kind === 'create') {
+    return { isStale: false, files: fileStatuses(staged) }
   }
 
-  renderCreated(proposal: Proposal): string {
-    const skill = proposal.skill!
-    return `---
-name: ${yamlScalar(proposal.skillId)}
-description: ${yamlScalar(skill.description)}
-metadata:
-  opencode/slash: "false"
-  opencode/autoinvoke: "true"
-  ${OWNER_MARKER}
-  learning/created: ${yamlScalar(nowIso())}
-  learning/version: "1"
----
-
-${skill.body.trim()}
-`
-  }
-
-  async create(
-    proposal: Proposal,
-    { scope }: { scope: string }
-  ): Promise<{ file: string; text: string; sha256: string; supportingFiles: string[] }> {
-    const skillId = proposal.skillId!
-    const dir = this.skillDir(skillId, scope)
-    const file = path.join(dir, 'SKILL.md')
-    const text = this.renderCreated(proposal)
-    const files = proposal.skill!.files ?? []
-    await reserveDirectory(dir, `skill already exists: ${proposal.skillId}`)
-
-    try {
-      await atomicWrite(file, text)
-      await this.addSupportingFiles(dir, files)
-    } catch (error) {
-      await fs.rm(dir, { recursive: true, force: true })
-      throw error
-    }
-
+  try {
+    const current = await validateSkillTree(safeChild(paths.projectSkills, proposal.skillId), true)
     return {
-      file,
-      text,
-      sha256: sha256(text),
-      supportingFiles: files.map((item) => item.path)
+      isStale: current.revision !== proposal.expectedRevision,
+      files: fileStatuses(staged, current)
     }
+  } catch {
+    return { isStale: true, files: fileStatuses(staged) }
+  }
+}
+
+async function stage(
+  paths: StorePaths,
+  metadata: ProposalMetadata,
+  temporaryRoot: string,
+  id: string
+): Promise<void> {
+  if ((await pendingCount(paths)) >= PENDING_LIMIT) {
+    throw new Error('pending proposal limit reached')
   }
 
-  async patch(
-    proposal: Proposal,
-    { scope }: { scope: string }
-  ): Promise<{ file: string; text: string; sha256: string; addedFiles: string[] }> {
-    const skillId = proposal.skillId!
-    const current = await this.getOwned(skillId, scope)
-    if (current === undefined) {
-      throw new Error(`refusing to patch non-owned or missing skill: ${skillId}`)
-    }
-
-    if (current.sha256 !== proposal.expectedSha256) {
-      throw new Error(`stale patch for ${skillId}; skill changed since reflection`)
-    }
-
-    const supportingFiles = proposal.addFiles ?? []
-    await ensureSupportingFilesAbsent(current.dir, supportingFiles)
-    const nextText = bumpVersion(applyOperations(current.text, proposal.operations!))
-    await atomicWrite(current.file, nextText)
-    await this.addSupportingFiles(current.dir, supportingFiles)
-    return {
-      file: current.file,
-      text: nextText,
-      sha256: sha256(nextText),
-      addedFiles: supportingFiles.map((item) => item.path)
-    }
+  const destination = safeChild(paths.pending, id)
+  if (await isPresent(destination)) {
+    throw new Error('proposal id collision')
   }
 
-  async addSupportingFiles(skillDir: string, files: SupportingFile[]): Promise<void> {
-    await Promise.all(
-      files.map(async (item) => atomicWrite(supportPath(skillDir, item.path), item.content))
-    )
+  await fs.writeFile(
+    path.join(temporaryRoot, 'proposal.json'),
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    { mode: 0o644 }
+  )
+  await fs.mkdir(path.dirname(destination), { recursive: true })
+  await fs.rename(temporaryRoot, destination)
+}
+
+async function assertCreateAvailable(paths: StorePaths, skillId: string): Promise<void> {
+  if (!isSkillId(skillId)) {
+    throw new Error('invalid skill id')
+  }
+
+  const occupied = await Promise.all([
+    isPresent(safeChild(paths.projectSkills, skillId)),
+    isPresent(safeChild(paths.globalSkills, skillId))
+  ])
+  if (occupied.includes(true)) {
+    throw new Error('skill id already exists')
+  }
+}
+
+async function approvalTarget(paths: StorePaths, proposal: PendingProposal): Promise<string> {
+  const target = safeChild(paths.projectSkills, proposal.skillId)
+  if (proposal.kind === 'create') {
+    await assertCreateAvailable(paths, proposal.skillId)
+    return target
+  }
+
+  const current = await validateSkillTree(target, true)
+  if (current.revision !== proposal.expectedRevision) {
+    throw new Error('patch target is stale')
+  }
+
+  return target
+}
+
+async function approve(paths: StorePaths, id: string): Promise<string> {
+  const proposal = await readPending(paths, id)
+  const staged = path.join(safeChild(paths.pending, id), 'skill')
+  const intended = await validateSkillTree(staged, true)
+  const target = await approvalTarget(paths, proposal)
+  await copySkillTree(staged, target)
+  const [applied, unchanged] = await Promise.all([scanSkillTree(target), scanSkillTree(staged)])
+  if (applied.revision !== intended.revision || unchanged.revision !== intended.revision) {
+    throw new Error('approval post-check failed')
+  }
+
+  await fs.rm(safeChild(paths.pending, id), { recursive: true })
+  return proposal.skillId
+}
+
+async function removeGlobalTarget(target: string): Promise<void> {
+  if (!(await isPresent(target))) {
+    return
+  }
+
+  const stat = await fs.lstat(target)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('global destination is not a real directory')
+  }
+
+  await fs.rm(target, { recursive: true })
+}
+
+async function promote(paths: StorePaths, skillId: string): Promise<void> {
+  if (!isSkillId(skillId)) {
+    throw new Error('invalid skill id')
+  }
+
+  const source = safeChild(paths.projectSkills, skillId)
+  const intended = await validateSkillTree(source, true)
+  const target = safeChild(paths.globalSkills, skillId)
+  await removeGlobalTarget(target)
+  await copySkillTree(source, target)
+  const [unchanged, copied] = await Promise.all([scanSkillTree(source), scanSkillTree(target)])
+  if (unchanged.revision !== intended.revision || copied.revision !== intended.revision) {
+    throw new Error('promotion post-check failed')
+  }
+}
+
+export function createStore(project: string) {
+  const paths = storePaths(project)
+  return {
+    ...paths,
+    pendingCount: async () => pendingCount(paths),
+    listPending: async () => listPending(paths),
+    readPending: async (id: string) => readPending(paths, id),
+    patchStatus: async (proposal: PendingProposal) => patchStatus(paths, proposal),
+    stage: async (metadata: ProposalMetadata, temporaryRoot: string, id: string) =>
+      stage(paths, metadata, temporaryRoot, id),
+    async reject(id: string) {
+      if (!isProposalId(id)) {
+        throw new Error('proposal id must be an exact UUID')
+      }
+
+      await fs.rm(safeChild(paths.pending, id), { recursive: true, force: true })
+    },
+    approve: async (id: string) => approve(paths, id),
+    promote: async (skillId: string) => promote(paths, skillId),
+    validateTree: validateSkillTree,
+    assertCreateAvailable: async (skillId: string) => assertCreateAvailable(paths, skillId)
   }
 }

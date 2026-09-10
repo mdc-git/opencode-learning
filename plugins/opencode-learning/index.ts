@@ -1,18 +1,279 @@
-import { Plugin } from '@opencode-ai/plugin'
-import { loadConfig } from './config.ts'
-import type { OpenCodeContext } from './sdk.ts'
-import { LearningSetup } from './setup.ts'
+import { Plugin } from '@opencode/plugin/effect'
+import { Effect, Fiber, Stream } from 'effect'
+import { registerCommands } from './commands.ts'
+import { runReview, type ReviewResult } from './review.ts'
+import { createStore, PENDING_LIMIT, type Store } from './store.ts'
 
-export { normalizeTelemetryState } from './telemetry-state.ts'
+const SUCCESSFUL_TURNS_PER_REVIEW = 3
 
-export default Plugin.define({
-  id: 'github.learning_skills',
-  async setup(ctx: OpenCodeContext): Promise<(() => Promise<void>) | undefined> {
-    const config = loadConfig(ctx.options)
-    if (!config.enabled) {
+type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
+type SessionId = SessionRef['sessionID']
+type ReviewFiber = Fiber.Fiber<unknown, unknown>
+type SessionState = {
+  reviewCursor?: string
+  successfulTurnsSinceReview: number
+  pendingLimitNotified: boolean
+  reviewFiber?: ReviewFiber
+}
+type Runtime = {
+  ctx: Plugin.Context
+  store: Store
+  states: Map<SessionId, SessionState>
+}
+
+function stateFor(states: Map<SessionId, SessionState>, sessionId: SessionId): SessionState {
+  const existing = states.get(sessionId)
+  if (existing !== undefined) {
+    return existing
+  }
+
+  const created = { successfulTurnsSinceReview: 0, pendingLimitNotified: false }
+  states.set(sessionId, created)
+  return created
+}
+
+function record(message: unknown): Record<string, unknown> | undefined {
+  return typeof message === 'object' && message !== null
+    ? (message as Record<string, unknown>)
+    : undefined
+}
+
+function cursorBeforeLatestUser(messages: readonly unknown[]): string | undefined {
+  const index = messages.findLastIndex((message) => record(message)?.type === 'user')
+  if (index <= 0) {
+    return undefined
+  }
+
+  const previous = record(messages[index - 1])
+  return typeof previous?.id === 'string' ? previous.id : undefined
+}
+
+function latestUserText(messages: readonly unknown[]): string {
+  const message = messages.findLast((item) => record(item)?.type === 'user')
+  const text = record(message)?.text
+  return typeof text === 'string' ? text : ''
+}
+
+function isLearningCommand(text: string): boolean {
+  return /^\/learn(?:\s|$|-)/v.test(text.trim())
+}
+
+function passive(ctx: Plugin.Context, sessionRef: SessionRef, text: string) {
+  const input = { ...sessionRef, text, resume: false }
+  return ctx.session.synthetic(input).pipe(
+    Effect.asVoid,
+    Effect.catch(() => Effect.void)
+  )
+}
+
+function capWarning(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+  if (state.pendingLimitNotified) {
+    return Effect.void
+  }
+
+  state.pendingLimitNotified = true
+  return passive(runtime.ctx, sessionRef, 'pending proposal limit reached')
+}
+
+function finishAutomatic(
+  runtime: Runtime,
+  sessionRef: SessionRef,
+  state: SessionState,
+  result: ReviewResult
+) {
+  if (result.endCursor !== undefined) {
+    state.reviewCursor = result.endCursor
+  }
+
+  if (result.kind === 'cap') {
+    return capWarning(runtime, sessionRef, state)
+  }
+
+  if (result.kind !== 'staged') {
+    return Effect.void
+  }
+
+  const text = `${result.id} ${result.proposal.kind} ${result.proposal.skillId}\n/learn-pending ${result.id}`
+  return passive(runtime.ctx, sessionRef, text)
+}
+
+function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+  return runReview(runtime.ctx, runtime.store, sessionRef, state.reviewCursor).pipe(
+    Effect.flatMap((result) => finishAutomatic(runtime, sessionRef, state, result)),
+    Effect.catch(() => Effect.void),
+    Effect.ensuring(
+      Effect.sync(() => {
+        state.reviewFiber = undefined
+      })
+    )
+  )
+}
+
+function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+  return Effect.gen(function* () {
+    state.successfulTurnsSinceReview = 0
+    const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(
+      Effect.orDie
+    )
+    if (pending < PENDING_LIMIT) {
+      state.pendingLimitNotified = false
+    }
+
+    if (pending >= PENDING_LIMIT) {
+      yield* capWarning(runtime, sessionRef, state)
       return
     }
 
-    return new LearningSetup(ctx, config).setup()
+    state.reviewFiber = yield* Effect.forkDetach(automaticReview(runtime, sessionRef, state))
+  })
+}
+
+function eligibleContext(runtime: Runtime, sessionRef: SessionRef) {
+  return runtime.ctx.session.get(sessionRef).pipe(
+    Effect.flatMap((session) =>
+      session.parentID === undefined
+        ? runtime.ctx.session.context(sessionRef)
+        : Effect.succeed(undefined)
+    ),
+    Effect.map((messages) =>
+      messages === undefined || isLearningCommand(latestUserText(messages)) ? undefined : messages
+    )
+  )
+}
+
+function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {
+  return eligibleContext(runtime, sessionRef).pipe(
+    Effect.flatMap((messages) => {
+      if (messages === undefined) {
+        return Effect.void
+      }
+
+      const state = stateFor(runtime.states, sessionRef.sessionID)
+      state.successfulTurnsSinceReview += 1
+      const isDue = state.successfulTurnsSinceReview >= SUCCESSFUL_TURNS_PER_REVIEW
+      return isDue && state.reviewFiber === undefined
+        ? startAutomatic(runtime, sessionRef, state)
+        : Effect.void
+    }),
+    Effect.catchCause(() => Effect.void)
+  )
+}
+
+function deleteSession(runtime: Runtime, sessionId: SessionId) {
+  const state = runtime.states.get(sessionId)
+  runtime.states.delete(sessionId)
+  return state?.reviewFiber === undefined
+    ? Effect.void
+    : Fiber.interrupt(state.reviewFiber).pipe(Effect.asVoid)
+}
+
+function baseline(runtime: Runtime) {
+  return runtime.ctx.session.hook('context', (request) => {
+    if (runtime.states.has(request.sessionID)) {
+      return Effect.void
+    }
+
+    return runtime.ctx.session.get(request).pipe(
+      Effect.flatMap((session) =>
+        session.parentID === undefined ? runtime.ctx.session.context(request) : Effect.succeed([])
+      ),
+      Effect.tap((messages) =>
+        Effect.sync(() => {
+          if (messages.length > 0) {
+            stateFor(runtime.states, request.sessionID).reviewCursor =
+              cursorBeforeLatestUser(messages)
+          }
+        })
+      ),
+      Effect.asVoid,
+      Effect.catch(() => Effect.void)
+    )
+  })
+}
+
+function manualReview(
+  runtime: Runtime,
+  sessionRef: SessionRef
+): Effect.Effect<ReviewResult, unknown> {
+  const state = stateFor(runtime.states, sessionRef.sessionID)
+  if (state.reviewFiber !== undefined) {
+    return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })
   }
+
+  return Effect.gen(function* () {
+    const pending = yield* Effect.promise(async () => runtime.store.pendingCount())
+    if (pending >= PENDING_LIMIT) {
+      return { kind: 'cap' }
+    }
+
+    state.pendingLimitNotified = false
+    state.successfulTurnsSinceReview = 0
+    const review = runReview(runtime.ctx, runtime.store, sessionRef).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          state.reviewFiber = undefined
+        })
+      )
+    )
+    const fiber = yield* Effect.forkDetach(review)
+    state.reviewFiber = fiber
+    const result = yield* Fiber.join(fiber)
+    if (result.endCursor !== undefined) {
+      state.reviewCursor = result.endCursor
+    }
+
+    return result
+  })
+}
+
+function reviewFibers(states: Map<SessionId, SessionState>): ReviewFiber[] {
+  const fibers: ReviewFiber[] = []
+  for (const state of states.values()) {
+    if (state.reviewFiber !== undefined) {
+      fibers.push(state.reviewFiber)
+    }
+  }
+
+  return fibers
+}
+
+function shutdown(states: Map<SessionId, SessionState>) {
+  return Fiber.interruptAll(reviewFibers(states)).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        states.clear()
+      })
+    )
+  )
+}
+
+export default Plugin.define({
+  id: 'github.learning_skills',
+  effect: (ctx) =>
+    Effect.gen(function* () {
+      const runtime: Runtime = {
+        ctx,
+        store: createStore(ctx.location.directory),
+        states: new Map()
+      }
+      yield* baseline(runtime)
+      yield* registerCommands(ctx, runtime.store, (sessionRef) =>
+        manualReview(runtime, sessionRef)
+      ).pipe(Effect.orDie)
+      yield* ctx.event.subscribe().pipe(
+        Stream.runForEach((event) => {
+          if (event.type === 'session.execution.succeeded') {
+            return primarySuccess(runtime, event.data)
+          }
+
+          if (event.type === 'session.deleted') {
+            return deleteSession(runtime, event.data.sessionID)
+          }
+
+          return Effect.void
+        }),
+        Effect.forkScoped
+      )
+      yield* Effect.addFinalizer(() => shutdown(runtime.states))
+    })
 })
