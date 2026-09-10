@@ -4,6 +4,8 @@ import { hasOwnership, skillDescription, type FileManifest } from './skill-files
 import type { Store } from './store.ts'
 
 const CONTROL = /^\/learn(?:\s|$|-)/v
+const PATH_KEYS = ['path', 'target', 'file']
+const NESTED_KEYS = ['metadata', 'relevantInput']
 const encoder = new TextEncoder()
 
 export type Candidate = {
@@ -38,46 +40,55 @@ function compactTool(part: Record<string, unknown>): unknown {
   }
 }
 
+function compactPart(part: unknown): unknown[] {
+  const item = messageRecord(part)
+  if (item?.type === 'text') {
+    return [{ type: 'text', text: item.text }]
+  }
+
+  return item?.type === 'tool' ? [compactTool(item)] : []
+}
+
 function compactAssistant(message: Record<string, unknown>): unknown {
   const content = Array.isArray(message.content) ? message.content : []
-  const records = content.flatMap((part) => {
-    const item = messageRecord(part)
-    if (item === undefined || (item.type !== 'text' && item.type !== 'tool')) {
-      return []
-    }
+  return { type: 'assistant', content: content.flatMap(compactPart) }
+}
 
-    return [item.type === 'text' ? { type: 'text', text: item.text } : compactTool(item)]
-  })
-  return { type: 'assistant', content: records }
+function compactUser(item: Record<string, unknown>): unknown | undefined {
+  const text = typeof item.text === 'string' ? item.text : ''
+  return CONTROL.test(text) ? undefined : { type: 'user', text, files: item.files }
 }
 
 function compactMessage(message: unknown): unknown | undefined {
   const item = messageRecord(message)
-  if (item === undefined) {
-    return undefined
+  switch (item?.type) {
+    case 'user':
+      return compactUser(item)
+    case 'assistant':
+      return compactAssistant(item)
+    case 'shell':
+      return { type: 'shell', status: item.status, exit: item.exit }
+    default:
+      return undefined
+  }
+}
+
+function collectPathField(key: string, item: unknown, output: Set<string>): boolean {
+  if (!PATH_KEYS.includes(key) || typeof item !== 'string') {
+    return false
   }
 
-  if (item.type === 'user') {
-    const text = typeof item.text === 'string' ? item.text : ''
-    return CONTROL.test(text) ? undefined : { type: 'user', text, files: item.files }
-  }
-
-  if (item.type === 'assistant') {
-    return compactAssistant(item)
-  }
-
-  if (item.type === 'shell') {
-    return { type: 'shell', status: item.status, exit: item.exit }
-  }
-
-  return undefined
+  output.add(item)
+  return true
 }
 
 function collectPathFields(value: Record<string, unknown>, output: Set<string>): void {
   for (const [key, item] of Object.entries(value)) {
-    if ((key === 'path' || key === 'target' || key === 'file') && typeof item === 'string') {
-      output.add(item)
-    } else if ((key === 'metadata' || key === 'relevantInput') && item !== undefined) {
+    if (collectPathField(key, item, output)) {
+      continue
+    }
+
+    if (NESTED_KEYS.includes(key) && item !== undefined) {
       collectAuthorizedPaths(item, output)
     }
   }
@@ -166,24 +177,34 @@ function tokens(text: string): Set<string> {
   return new Set(words)
 }
 
+type CandidateScore = { candidate: Candidate; explicit: boolean; overlap: number }
+
+function scoreCandidate(candidate: Candidate, text: string, words: Set<string>): CandidateScore {
+  const overlap = [...tokens(`${candidate.id} ${candidate.description}`)].filter((word) =>
+    words.has(word)
+  ).length
+  return { candidate, explicit: text.includes(candidate.id), overlap }
+}
+
+function compareScore(left: CandidateScore, right: CandidateScore): number {
+  if (left.explicit !== right.explicit) {
+    return left.explicit ? -1 : 1
+  }
+
+  if (left.overlap !== right.overlap) {
+    return right.overlap - left.overlap
+  }
+
+  return left.candidate.id.localeCompare(right.candidate.id)
+}
+
 export function selectCandidates(all: Candidate[], evidence: Evidence): Candidate[] {
   const text = JSON.stringify(evidence.records)
   const words = tokens(text)
   return all
-    .map((candidate) => ({
-      candidate,
-      explicit: text.includes(candidate.id),
-      overlap: [...tokens(`${candidate.id} ${candidate.description}`)].filter((word) =>
-        words.has(word)
-      ).length
-    }))
+    .map((candidate) => scoreCandidate(candidate, text, words))
     .filter((item) => item.explicit || item.overlap > 0)
-    .toSorted(
-      (left, right) =>
-        Number(right.explicit) - Number(left.explicit) ||
-        right.overlap - left.overlap ||
-        left.candidate.id.localeCompare(right.candidate.id)
-    )
+    .toSorted(compareScore)
     .slice(0, 5)
     .map((item) => item.candidate)
 }
