@@ -257,7 +257,7 @@ export default Plugin.define({
     })
     const stopCommands = context.ui.slot({
       append: 'app',
-      render: () => {
+      render() {
         context.keymap.layer(() => ({
           mode: 'global',
           commands: learningCommands(context, rpc)
