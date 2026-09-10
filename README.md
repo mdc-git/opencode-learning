@@ -2,7 +2,7 @@
 
 `opencode-learning` is an Effect-native OpenCode V2 plugin that extracts one reusable procedural skill from root-session activity and stages every learned change for explicit approval.
 
-The plugin ID is `github.learning_skills`. The package root exports `plugins/opencode-learning/index.ts`, and the package publishes only `plugins/`.
+The plugin ID is `github.learning_skills`. The package root exports `index.ts`, which re-exports the plugin implementation from `plugins/opencode-learning/index.ts`. Published package contents include `index.ts` and `plugins/`.
 
 ## Installation
 
@@ -19,7 +19,7 @@ OpenCode resolves the repository package export and its declared runtime depende
 
 ## Local development
 
-The repository uses the same package entrypoint locally and from GitHub. `.opencode/opencode.jsonc` disables the configured GitHub copy and loads the repository root:
+The repository root is the local plugin entrypoint. `.opencode/opencode.jsonc` disables the configured GitHub copy and loads the repository root:
 
 ```jsonc
 {
