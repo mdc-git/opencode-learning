@@ -4,14 +4,14 @@
   "private": true,
   "repository": "github:mdc-git/opencode-learning",
   "type": "module",
-  "exports": "./plugins/opencode-learning/index.ts",
+  "exports": "./index.ts",
   "sideEffects": false,
   "engines": {
     "node": ">=24"
   },
   "scripts": {
     "audit": "npm audit",
-    "check:deps": "depcruise --config .dependency-cruiser.mjs plugins/opencode-learning",
+    "check:deps": "depcruise --config .dependency-cruiser.mjs index.ts plugins/opencode-learning",
     "check:knip": "knip",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "files": [
+    "index.ts",
     "plugins"
   ],
   "dependencies": {

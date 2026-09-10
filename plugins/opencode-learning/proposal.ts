@@ -40,12 +40,12 @@ function proposalKind(value: unknown): ProposalMetadata['kind'] {
   return value
 }
 
-export function validSkillId(value: unknown): value is string {
+export function isSkillId(value: unknown): value is string {
   return typeof value === 'string' && SKILL_ID.test(value)
 }
 
 function proposalSkillId(value: unknown): string {
-  if (!validSkillId(value)) {
+  if (!isSkillId(value)) {
     throw new TypeError('invalid skill id')
   }
 

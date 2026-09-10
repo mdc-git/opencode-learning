@@ -8,13 +8,18 @@ function isMapping(value: unknown): value is Mapping {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function frontmatterMatch(text: string): RegExpExecArray {
+function frontmatterGroups(text: string): Record<string, string> {
   const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---\r?\n(?<body>[\s\S]*)$/v.exec(text)
   if (match?.groups === undefined) {
     throw new Error('SKILL.md requires YAML frontmatter')
   }
 
-  return match
+  return match.groups
+}
+
+function group(groups: Record<string, string>, key: string): string {
+  const value = groups[key]
+  return value === undefined ? '' : value
 }
 
 function frontmatterData(document: ReturnType<typeof parseDocument>): Mapping {
@@ -31,12 +36,12 @@ function frontmatterData(document: ReturnType<typeof parseDocument>): Mapping {
 }
 
 function skillDocument(text: string) {
-  const match = frontmatterMatch(text)
-  const document = parseDocument(match.groups?.yaml ?? '')
+  const groups = frontmatterGroups(text)
+  const document = parseDocument(group(groups, 'yaml'))
   return {
     document,
     data: frontmatterData(document),
-    body: match.groups?.body ?? ''
+    body: group(groups, 'body')
   }
 }
 

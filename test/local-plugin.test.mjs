@@ -67,7 +67,8 @@ async function serverUrl(server) {
 function isolatedEnvironment(root) {
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
+      ([name]) =>
+        !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
     )
   )
   return {
@@ -89,11 +90,15 @@ function isolatedEnvironment(root) {
 }
 
 function startServer(project, root) {
-  const child = spawn(process.env.OPENCODE_BIN ?? 'opencode2', ['serve', '--stdio', '--port', '0'], {
-    cwd: project,
-    env: isolatedEnvironment(root),
-    stdio: ['pipe', 'pipe', 'pipe']
-  })
+  const child = spawn(
+    process.env.OPENCODE_BIN ?? 'opencode2',
+    ['serve', '--stdio', '--port', '0'],
+    {
+      cwd: project,
+      env: isolatedEnvironment(root),
+      stdio: ['pipe', 'pipe', 'pipe']
+    }
+  )
   let diagnostics = ''
   child.stderr.setEncoding('utf8')
   child.stderr.on('data', (chunk) => {
@@ -114,7 +119,10 @@ async function stopServer(server) {
   }
 
   server.kill('SIGTERM')
-  const closed = await Promise.race([once(server, 'close').then(() => true), delay(2000).then(() => false)])
+  const closed = await Promise.race([
+    once(server, 'close').then(() => true),
+    delay(2000).then(() => false)
+  ])
   if (!closed) {
     server.kill('SIGKILL')
   }
@@ -157,22 +165,23 @@ function waitForPlugin(base, project, diagnostics) {
       clearInterval(interval)
       result()
     }
+
     const timer = setTimeout(() => {
       finish(timer, interval, () => reject(activationError(lastSnapshot, diagnostics)))
     }, 15_000)
     const check = () => {
-      pluginSnapshot(base, project).then(
-        (snapshot) => {
+      pluginSnapshot(base, project)
+        .then((snapshot) => {
           lastSnapshot = snapshot
           if (isActivated(snapshot)) {
             finish(timer, interval, () => resolve(snapshot.plugin))
           }
-        },
-        (error) => {
+        })
+        .catch((error) => {
           finish(timer, interval, () => reject(error))
-        }
-      )
+        })
     }
+
     const interval = setInterval(check, 100)
     check()
   })
@@ -228,7 +237,9 @@ async function assertReject(base, project, sessionID) {
   await mkdir(malformed, { recursive: true })
   await writeFile(path.join(malformed, 'proposal.json'), '{not-json')
   await runCommand(base, sessionID, 'learn-reject', idB)
-  await assert.rejects(readFile(path.join(malformed, 'proposal.json'), 'utf8'), { code: 'ENOENT' })
+  await assert.rejects(readFile(path.join(malformed, 'proposal.json'), 'utf8'), {
+    code: 'ENOENT'
+  })
 }
 
 async function assertPromotion(base, project, root, sessionID) {
@@ -237,13 +248,19 @@ async function assertPromotion(base, project, root, sessionID) {
   await writeFile(path.join(global, 'SKILL.md'), skill('Wrong global copy'))
   await runCommand(base, sessionID, 'learn-promote', 'created-skill')
   const projectSkill = path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md')
-  assert.equal(await readFile(path.join(global, 'SKILL.md'), 'utf8'), await readFile(projectSkill, 'utf8'))
+  assert.equal(
+    await readFile(path.join(global, 'SKILL.md'), 'utf8'),
+    await readFile(projectSkill, 'utf8')
+  )
 }
 
 async function exercisePlugin(root, project) {
   await mkdir(project, { recursive: true })
   await mkdir(path.join(root, 'tmp'), { recursive: true })
-  await writeFile(path.join(project, 'opencode.jsonc'), `${JSON.stringify({ plugins: [repository] })}\n`)
+  await writeFile(
+    path.join(project, 'opencode.jsonc'),
+    `${JSON.stringify({ plugins: [repository] })}\n`
+  )
   const running = startServer(project, root)
   try {
     const base = await serverUrl(running.child)
@@ -264,12 +281,15 @@ async function exercisePlugin(root, project) {
   }
 }
 
-test('package-root plugin exposes only the current learning surface and stages explicit filesystem changes', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
-  const project = path.join(root, 'project')
-  try {
-    assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
-  } finally {
-    await rm(root, { recursive: true, force: true })
+test(
+  'package-root plugin exposes only the current learning surface and stages explicit filesystem changes',
+  async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
+    const project = path.join(root, 'project')
+    try {
+      assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   }
-})
+)

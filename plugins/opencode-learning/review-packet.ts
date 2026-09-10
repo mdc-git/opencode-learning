@@ -1,4 +1,5 @@
-import { candidatePacket, catalog, type Candidate, type Evidence } from './evidence.ts'
+import { candidatePacket, catalog, type Candidate } from './candidates.ts'
+import type { Evidence } from './evidence.ts'
 import type { ProposalMetadata } from './proposal.ts'
 import type { ActiveReflection } from './review-schema.ts'
 

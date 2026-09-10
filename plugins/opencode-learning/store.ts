@@ -4,7 +4,7 @@ import process from 'node:process'
 import {
   decodeProposal,
   isProposalId,
-  validSkillId,
+  isSkillId,
   type PendingProposal,
   type ProposalMetadata
 } from './proposal.ts'
@@ -15,7 +15,7 @@ import {
   validateSkillTree,
   type FileManifest,
   type TreeScan
-} from './skill-files.ts'
+} from './skill-tree.ts'
 
 export const PENDING_LIMIT = 20
 
@@ -121,7 +121,9 @@ async function pendingEntry(paths: StorePaths, id: string) {
 async function listPending(paths: StorePaths): Promise<PendingProposal[]> {
   const ids = await pendingIds(paths)
   const entries = await Promise.all(ids.map(async (id) => pendingEntry(paths, id)))
-  return entries.toSorted((left, right) => right.mtime - left.mtime).map((entry) => entry.proposal)
+  return entries
+    .toSorted((left, right) => right.mtime - left.mtime)
+    .map((entry) => entry.proposal)
 }
 
 function isSameFile(left: FileManifest, right: FileManifest): boolean {
@@ -151,7 +153,10 @@ async function patchStatus(paths: StorePaths, proposal: PendingProposal) {
   }
 
   try {
-    const current = await validateSkillTree(safeChild(paths.projectSkills, proposal.skillId), true)
+    const current = await validateSkillTree(
+      safeChild(paths.projectSkills, proposal.skillId),
+      true
+    )
     return {
       isStale: current.revision !== proposal.expectedRevision,
       files: fileStatuses(staged, current)
@@ -176,15 +181,17 @@ async function stage(
     throw new Error('proposal id collision')
   }
 
-  await fs.writeFile(path.join(temporaryRoot, 'proposal.json'), `${JSON.stringify(metadata, null, 2)}\n`, {
-    mode: 0o644
-  })
+  await fs.writeFile(
+    path.join(temporaryRoot, 'proposal.json'),
+    `${JSON.stringify(metadata, null, 2)}\n`,
+    { mode: 0o644 }
+  )
   await fs.mkdir(path.dirname(destination), { recursive: true })
   await fs.rename(temporaryRoot, destination)
 }
 
 async function assertCreateAvailable(paths: StorePaths, skillId: string): Promise<void> {
-  if (!validSkillId(skillId)) {
+  if (!isSkillId(skillId)) {
     throw new Error('invalid skill id')
   }
 
@@ -192,7 +199,7 @@ async function assertCreateAvailable(paths: StorePaths, skillId: string): Promis
     isPresent(safeChild(paths.projectSkills, skillId)),
     isPresent(safeChild(paths.globalSkills, skillId))
   ])
-  if (occupied.some((isOccupied) => isOccupied)) {
+  if (occupied.includes(true)) {
     throw new Error('skill id already exists')
   }
 }
@@ -241,7 +248,7 @@ async function removeGlobalTarget(target: string): Promise<void> {
 }
 
 async function promote(paths: StorePaths, skillId: string): Promise<void> {
-  if (!validSkillId(skillId)) {
+  if (!isSkillId(skillId)) {
     throw new Error('invalid skill id')
   }
 
