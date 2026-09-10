@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -12,289 +12,143 @@ import { test } from 'node:test'
 const repository = path.resolve(import.meta.dirname, '..')
 const password = 'learning-plugin-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
-const learningAgents = ['learning-reflector', 'learning-validator']
-const learningCommands = [
-  'learn',
-  'learn-pending',
-  'learn-show',
-  'learn-approve',
-  'learn-reject',
-  'learn-status',
-  'learn-curate',
-  'learn-promote'
-]
+const commands = ['learn', 'learn-pending', 'learn-approve', 'learn-reject', 'learn-promote']
+const idA = '11111111-1111-4111-8111-111111111111'
+const idB = '22222222-2222-4222-8222-222222222222'
 
-function withServerDiagnostics(message, diagnostics) {
-  return [message, diagnostics.stderr === '' ? '' : `Server stderr:\n${diagnostics.stderr}`]
-    .filter(Boolean)
-    .join('\n')
+function skill(description, body = '# Learned\n\nDo the verified thing.\n') {
+  return `---\ndescription: ${description}\nmetadata:\n  opencode-learning/owner: "true"\n---\n${body}`
 }
 
-async function readServerUrl(server, diagnostics) {
+async function api(base, requestPath, options = {}) {
+  const response = await fetch(new URL(requestPath, base), {
+    ...options,
+    headers: { authorization, 'content-type': 'application/json', ...options.headers }
+  })
+  if (!response.ok) throw new Error(`${response.status}: ${await response.text()}`)
+  return response.status === 204 ? undefined : response.json()
+}
+
+async function serverUrl(server) {
   const lines = createInterface({ input: server.stdout })
-  const abort = new AbortController()
-  const timeout = setTimeout(() => abort.abort(), 10_000)
   try {
     const [line] = await Promise.race([
-      once(lines, 'line', { signal: abort.signal }),
-      once(server, 'error', { signal: abort.signal }).then(([error]) => {
-        throw error
-      }),
-      once(server, 'exit', { signal: abort.signal }).then(([code, signal]) => {
-        throw new Error(`OpenCode server exited before readiness (${code ?? `signal=${signal}`})`)
-      })
+      once(lines, 'line'),
+      once(server, 'exit').then(([code]) => Promise.reject(new Error(`server exited ${code}`)))
     ])
     return JSON.parse(line).url
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    throw new Error(withServerDiagnostics(message, diagnostics), { cause: error })
   } finally {
-    clearTimeout(timeout)
-    abort.abort()
     lines.close()
   }
 }
 
-async function api(base, requestPath, diagnostics, options = {}) {
-  const abort = new AbortController()
-  const timeout = setTimeout(() => abort.abort(), 10_000)
-  try {
-    const response = await fetch(new URL(requestPath, base), {
-      ...options,
-      headers: { authorization, 'content-type': 'application/json', ...options.headers },
-      signal: abort.signal
-    })
-    if (!response.ok) {
-      throw new Error(
-        withServerDiagnostics(
-          `OpenCode API request failed (${response.status}): ${await response.text()}`,
-          diagnostics
-        )
-      )
-    }
-
-    return response.status === 204 ? undefined : await response.json()
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-async function awaitActivation(base, directory, diagnostics) {
-  return api(
-    base,
-    `/api/plugin/await-activation?location%5Bdirectory%5D=${encodeURIComponent(directory)}`,
-    diagnostics,
-    { method: 'POST', body: '{}' }
+function startServer(project, root) {
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name))
   )
-}
-
-function pluginTimeoutError(diagnostics, statuses, plugins) {
-  const failures = plugins.filter(({ state }) => state?.status === 'failed')
-  return new Error(
-    withServerDiagnostics(
-      [
-        'Timed out waiting for local.learning_skills',
-        statuses.length > 0 ? `Poll results: ${statuses.slice(-10).join(', ')}` : '',
-        failures.length > 0 ? `Plugin failures: ${JSON.stringify(failures)}` : ''
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      diagnostics
-    )
-  )
-}
-
-function isActivePlugin(plugin) {
-  return plugin?.state?.status === 'active'
-}
-
-async function waitForLocalPlugin(base, directory, diagnostics, deadline = Date.now() + 10_000) {
-  return new Promise((resolve, reject) => {
-    const statuses = []
-    let plugins = []
-    const poll = async () => {
-      const result = await pollLocalPlugin(base, directory, diagnostics)
-      plugins = result.plugins
-
-      if (isActivePlugin(result.plugin) && result.registrationsReady) {
-        clearInterval(timer)
-        clearTimeout(timeout)
-        resolve(result.plugin)
-        return
-      }
-
-      if (result.status) {
-        statuses.push(result.status)
-      }
-    }
-
-    const timer = setInterval(poll, 100)
-    const timeout = setTimeout(
-      () => {
-        clearInterval(timer)
-        reject(pluginTimeoutError(diagnostics, statuses, plugins))
-      },
-      Math.max(0, deadline - Date.now())
-    )
-    poll()
+  return spawn(process.env.OPENCODE_BIN ?? 'opencode2', ['serve', '--stdio', '--port', '0'], {
+    cwd: project,
+    env: {
+      ...inherited,
+      HOME: path.join(root, 'home'),
+      OPENCODE_CONFIG_CONTENT: '{}',
+      OPENCODE_CONFIG_DIR: path.join(root, 'config'),
+      OPENCODE_DB: path.join(root, 'opencode.db'),
+      OPENCODE_DISABLE_MODELS_FETCH: 'true',
+      OPENCODE_PASSWORD: password,
+      TMPDIR: path.join(root, 'tmp'),
+      TMP: path.join(root, 'tmp'),
+      TEMP: path.join(root, 'tmp'),
+      XDG_CACHE_HOME: path.join(root, 'cache'),
+      XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
+      XDG_DATA_HOME: path.join(root, 'data'),
+      XDG_STATE_HOME: path.join(root, 'state')
+    },
+    stdio: ['pipe', 'pipe', 'pipe']
   })
-}
-
-async function pollLocalPlugin(base, directory, diagnostics) {
-  const abort = new AbortController()
-  const timeout = setTimeout(() => abort.abort(), 5000)
-  try {
-    const endpoint = new URL('/api/plugin', base)
-    endpoint.searchParams.set('location[directory]', directory)
-    const response = await fetch(endpoint, { headers: { authorization }, signal: abort.signal })
-    if (!response.ok) {
-      return { plugins: [], status: `HTTP ${response.status}` }
-    }
-
-    const body = await response.json()
-    const plugins = body.data
-    const plugin = plugins.find(({ id }) => id === 'local.learning_skills')
-    const locationQuery = `?location%5Bdirectory%5D=${encodeURIComponent(directory)}`
-    const [agents, commands] = await Promise.all([
-      api(base, `/api/agent${locationQuery}`, diagnostics),
-      api(base, `/api/command${locationQuery}`, diagnostics)
-    ])
-    return {
-      plugins,
-      plugin,
-      registrationsReady: hasLearningRegistrations(agents, commands)
-    }
-  } catch (error) {
-    return { plugins: [], status: error instanceof Error ? error.message : String(error) }
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-function hasLearningRegistrations(agents, commands) {
-  return (
-    learningAgents.every((id) => agents.data.some((agent) => agent.id === id)) &&
-    learningCommands.every((name) => commands.data.some((command) => command.name === name))
-  )
-}
-
-async function waitForClose(server, milliseconds) {
-  if (server.exitCode !== null || server.signalCode !== null) {
-    return true
-  }
-
-  const abort = new AbortController()
-  const timeout = setTimeout(() => abort.abort(), milliseconds)
-  try {
-    await once(server, 'close', { signal: abort.signal })
-    return true
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timeout)
-    abort.abort()
-  }
 }
 
 async function stopServer(server) {
+  if (server.exitCode !== null) return
   server.kill('SIGTERM')
-  if (await waitForClose(server, 2000)) {
-    return
+  const closed = await Promise.race([once(server, 'close').then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 2000))])
+  if (!closed) server.kill('SIGKILL')
+}
+
+function locationQuery(project) {
+  return `?location%5Bdirectory%5D=${encodeURIComponent(project)}`
+}
+
+async function waitForPlugin(base, project) {
+  const deadline = Date.now() + 15_000
+  while (Date.now() < deadline) {
+    const plugins = await api(base, `/api/plugin${locationQuery(project)}`)
+    const plugin = plugins.data.find((item) => item.id === 'github.learning_skills')
+    const registered = await api(base, `/api/command${locationQuery(project)}`)
+    if (plugin?.state?.status === 'active' && commands.every((name) => registered.data.some((item) => item.name === name))) return plugin
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
+  throw new Error('learning plugin did not activate')
+}
 
-  server.kill('SIGKILL')
-  await waitForClose(server, 2000).then((closed) => {
-    if (!closed) {
-      throw new Error('OpenCode server did not exit after SIGKILL')
-    }
+async function runCommand(base, sessionID, command, text = '') {
+  await api(base, `/api/session/${sessionID}/command`, {
+    method: 'POST',
+    body: JSON.stringify({ command, text })
   })
 }
 
-function startServer(project, root) {
-  const inherited = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([name]) =>
-        !name.startsWith('OPENCODE_') &&
-        name !== 'NODE_OPTIONS' &&
-        !['HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
-    )
-  )
-  const diagnostics = { stderr: '' }
-  const server = spawn(
-    process.env.OPENCODE_BIN ?? 'opencode2',
-    ['serve', '--stdio', '--port', '0'],
-    {
-      cwd: project,
-      env: {
-        ...inherited,
-        HOME: path.join(root, 'home'),
-        USERPROFILE: path.join(root, 'home'),
-        HOMEDRIVE: '',
-        HOMEPATH: path.join(root, 'home'),
-        OPENCODE_CONFIG_CONTENT: '{}',
-        OPENCODE_CONFIG_DIR: path.join(root, 'config'),
-        OPENCODE_DB: path.join(root, 'opencode.db'),
-        OPENCODE_TEST_HOME: root,
-        OPENCODE_DISABLE_MODELS_FETCH: 'true',
-        OPENCODE_PASSWORD: password,
-        TMPDIR: path.join(root, 'tmp'),
-        TMP: path.join(root, 'tmp'),
-        TEMP: path.join(root, 'tmp'),
-        XDG_CACHE_HOME: path.join(root, 'cache'),
-        XDG_CONFIG_HOME: path.join(root, 'xdg-config'),
-        XDG_DATA_HOME: path.join(root, 'data'),
-        XDG_STATE_HOME: path.join(root, 'state')
-      },
-      stdio: ['pipe', 'pipe', 'pipe']
-    }
-  )
-  server.stderr.setEncoding('utf8')
-  server.stderr.on('data', (chunk) => {
-    diagnostics.stderr = `${diagnostics.stderr}${chunk}`.slice(-16_384)
-  })
-  return { server, diagnostics }
+async function writeProposal(project, id, metadata, markdown) {
+  const root = path.join(project, '.opencode', '.learning', 'pending', id)
+  await mkdir(path.join(root, 'skill'), { recursive: true })
+  await writeFile(path.join(root, 'proposal.json'), `${JSON.stringify(metadata)}\n`)
+  await writeFile(path.join(root, 'skill', 'SKILL.md'), markdown)
 }
 
-test('loads the local learning plugin in a standalone session from a temp project', async () => {
+test('package-root plugin exposes only the current learning surface and stages explicit filesystem changes', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
+  const project = path.join(root, 'project')
   let server
   try {
-    const relative = path.relative(repository, root)
-    assert.ok(
-      relative.startsWith('..') || path.isAbsolute(relative),
-      'Temporary project must be outside the repository'
-    )
-    const project = path.join(root, 'project')
-    const pluginDirectory = path.join(repository, '.opencode', 'plugins', 'learning')
     await mkdir(project, { recursive: true })
     await mkdir(path.join(root, 'tmp'), { recursive: true })
-    await writeFile(
-      path.join(project, 'opencode.jsonc'),
-      `${JSON.stringify({
-        $schema: 'https://opencode.ai/config.json',
-        plugins: [pluginDirectory]
-      })}\n`
-    )
-    const started = startServer(project, root)
-    server = started.server
-    const base = await readServerUrl(server, started.diagnostics)
-    const session = await api(base, '/api/session', started.diagnostics, {
+    await writeFile(path.join(project, 'opencode.jsonc'), `${JSON.stringify({ plugins: [repository] })}\n`)
+    server = startServer(project, root)
+    const base = await serverUrl(server)
+    const session = await api(base, '/api/session', {
       method: 'POST',
       body: JSON.stringify({ location: { directory: project } })
     })
-    assert.ok(session.data.id)
-    await awaitActivation(base, project, started.diagnostics)
-    const plugin = await waitForLocalPlugin(base, project, started.diagnostics)
-    assert.equal(plugin.state.status, 'active')
+    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, { method: 'POST', body: '{}' })
+    const plugin = await waitForPlugin(base, project)
     assert.equal(plugin.source.type, 'local')
-    assert.equal(plugin.source.path, path.join(pluginDirectory, 'index.ts'))
+
+    const registered = await api(base, `/api/command${locationQuery(project)}`)
+    const learning = registered.data.map((item) => item.name).filter((name) => name.startsWith('learn'))
+    assert.deepEqual(learning.toSorted(), commands.toSorted())
+
+    const create = { kind: 'create', skillId: 'created-skill', reason: 'verified procedure', evidence: { records: [], omitted: 0 } }
+    await writeProposal(project, idA, create, skill('Created skill'))
+    await runCommand(base, session.data.id, 'learn-approve', idA)
+    assert.match(await readFile(path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md'), 'utf8'), /Created skill/v)
+    await assert.rejects(readFile(path.join(project, '.opencode', '.learning', 'pending', idA, 'proposal.json'), 'utf8'))
+
+    const malformed = path.join(project, '.opencode', '.learning', 'pending', idB)
+    await mkdir(malformed, { recursive: true })
+    await writeFile(path.join(malformed, 'proposal.json'), '{not-json')
+    await runCommand(base, session.data.id, 'learn-reject', idB)
+    await assert.rejects(readFile(path.join(malformed, 'proposal.json'), 'utf8'))
+
+    const global = path.join(root, 'xdg-config', 'opencode', 'skills', 'created-skill')
+    await mkdir(global, { recursive: true })
+    await writeFile(path.join(global, 'SKILL.md'), skill('Wrong global copy'))
+    await runCommand(base, session.data.id, 'learn-promote', 'created-skill')
+    assert.equal(
+      await readFile(path.join(global, 'SKILL.md'), 'utf8'),
+      await readFile(path.join(project, '.opencode', 'skills', 'created-skill', 'SKILL.md'), 'utf8')
+    )
   } finally {
-    try {
-      if (server) {
-        await stopServer(server)
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
+    if (server) await stopServer(server)
+    await rm(root, { recursive: true, force: true })
   }
 })
