@@ -14,6 +14,7 @@ import { boundPacket, captureEvidence, packetBytes, type Evidence } from './evid
 import { isSkillId, type ProposalMetadata } from './proposal.ts'
 import { isolatedGenerate } from './review-generate.ts'
 import { proposalFor, validatorPacket } from './review-packet.ts'
+import { REFLECTOR, VALIDATOR } from './review-prompts.ts'
 import {
   decodeReflection,
   decodeValidation,
@@ -26,10 +27,6 @@ import { materializeSkill } from './skill-files.ts'
 import { scanSkillTree } from './skill-tree.ts'
 import { PENDING_LIMIT, type Store } from './store.ts'
 
-const REFLECTOR =
-  'Return exactly one JSON reflection. Choose only a reusable procedure supported by evidence; return none when none is justified.'
-const VALIDATOR =
-  'Return exactly {"accept":boolean,"reason":string}. Validate evidence support, usefulness, non-duplication, conservative generalization, consistency, and safety.'
 const encoder = new TextEncoder()
 
 type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
