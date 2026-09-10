@@ -201,29 +201,27 @@ async function exercisePlugin(root, project) {
   await mkdir(path.join(root, 'tmp'), { recursive: true })
   await writeFile(path.join(project, 'opencode.jsonc'), `${JSON.stringify({ plugins: [repository] })}\n`)
   const running = startServer(project, root)
-  const base = await serverUrl(running.child)
-  const session = await createSession(base, project)
-  await api(base, `/api/plugin/await-activation${locationQuery(project)}`, { method: 'POST', body: '{}' })
-  const plugin = await waitForPlugin(base, project, running.diagnostics)
-  assert.equal(plugin.source.type, 'local')
-  await assertCommands(base, project)
-  await assertCreateApproval(base, project, session.data.id)
-  await assertReject(base, project, session.data.id)
-  await assertPromotion(base, project, root, session.data.id)
-  return running.child
+  try {
+    const base = await serverUrl(running.child)
+    const session = await createSession(base, project)
+    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, { method: 'POST', body: '{}' })
+    const plugin = await waitForPlugin(base, project, running.diagnostics)
+    assert.equal(plugin.source.type, 'local')
+    await assertCommands(base, project)
+    await assertCreateApproval(base, project, session.data.id)
+    await assertReject(base, project, session.data.id)
+    await assertPromotion(base, project, root, session.data.id)
+  } finally {
+    await stopServer(running.child)
+  }
 }
 
 test('package-root plugin exposes only the current learning surface and stages explicit filesystem changes', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   const project = path.join(root, 'project')
-  let server
   try {
-    server = await exercisePlugin(root, project)
+    await exercisePlugin(root, project)
   } finally {
-    if (server !== undefined) {
-      await stopServer(server)
-    }
-
     await rm(root, { recursive: true, force: true })
   }
 })
