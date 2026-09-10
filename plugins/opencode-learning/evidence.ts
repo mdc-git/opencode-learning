@@ -8,6 +8,7 @@ export type Evidence = {
   records: unknown[]
   omitted: number
   authorizedPaths: string[]
+  freshStart: number
   endCursor?: string
 }
 
@@ -79,6 +80,13 @@ function compactMessage(message: unknown): unknown | undefined {
   return MESSAGE_COMPACTERS[item.type]?.(item)
 }
 
+function compactMessages(messages: readonly unknown[]): unknown[] {
+  return messages.flatMap((message) => {
+    const compacted = compactMessage(message)
+    return compacted === undefined ? [] : [compacted]
+  })
+}
+
 function hasCollectedPath(key: string, item: unknown, output: Set<string>): boolean {
   if (typeof item !== 'string' || !PATH_KEYS.has(key)) {
     return false
@@ -124,17 +132,41 @@ function messageId(message: unknown): string | undefined {
   return typeof item?.id === 'string' ? item.id : undefined
 }
 
-export function captureEvidence(messages: readonly unknown[], startAfter?: string): Evidence {
-  const found =
-    startAfter === undefined
-      ? -1
-      : messages.findIndex((message) => messageId(message) === startAfter)
-  const start = startAfter === undefined ? 0 : Math.max(0, found + 1)
-  const selected = messages.slice(start)
-  const records = selected.flatMap((message) => {
-    const compacted = compactMessage(message)
-    return compacted === undefined ? [] : [compacted]
-  })
+function indexAfterCursor(messages: readonly unknown[], cursor?: string): number {
+  if (cursor === undefined) {
+    return 0
+  }
+
+  const found = messages.findIndex((message) => messageId(message) === cursor)
+  return found < 0 ? 0 : found + 1
+}
+
+function lookbackStart(messages: readonly unknown[], fresh: number, turns: number): number {
+  let remaining = turns
+  for (let index = fresh - 1; index >= 0; index -= 1) {
+    if (messageRecord(messages[index])?.type !== 'user') {
+      continue
+    }
+
+    remaining -= 1
+    if (remaining === 0) {
+      return index
+    }
+  }
+
+  return 0
+}
+
+export function captureEvidence(
+  messages: readonly unknown[],
+  startAfter?: string,
+  lookbackTurns = 0
+): Evidence {
+  const fresh = indexAfterCursor(messages, startAfter)
+  const start = startAfter === undefined ? fresh : lookbackStart(messages, fresh, lookbackTurns)
+  const contextRecords = compactMessages(messages.slice(start, fresh))
+  const freshRecords = compactMessages(messages.slice(fresh))
+  const records = [...contextRecords, ...freshRecords]
   const authorized = new Set<string>()
   for (const record of records) {
     collectAuthorizedPaths(record, authorized)
@@ -144,7 +176,8 @@ export function captureEvidence(messages: readonly unknown[], startAfter?: strin
     records,
     omitted: 0,
     authorizedPaths: [...authorized].toSorted((left, right) => left.localeCompare(right)),
-    endCursor: messageId(selected.at(-1))
+    freshStart: contextRecords.length,
+    endCursor: messageId(messages.slice(start).at(-1))
   }
 }
 
@@ -152,12 +185,12 @@ export function packetBytes(value: unknown): number {
   return encoder.encode(JSON.stringify(value)).byteLength
 }
 
-function boundedEvidence(evidence: Evidence, keep: number): Evidence {
-  const omitted = evidence.records.length - keep
+function boundedEvidence(evidence: Evidence, omitted: number): Evidence {
   return {
     ...evidence,
     records: evidence.records.slice(omitted),
-    omitted: evidence.omitted + omitted
+    omitted: evidence.omitted + omitted,
+    freshStart: evidence.freshStart - omitted
   }
 }
 
@@ -167,12 +200,9 @@ function fitEvidence(
   candidates: Candidate[],
   maxBytes: number
 ): Evidence | undefined {
-  const counts = Array.from(
-    { length: evidence.records.length + 1 },
-    (_, index) => evidence.records.length - index
-  )
-  return counts
-    .map((count) => boundedEvidence(evidence, count))
+  const omissions = Array.from({ length: evidence.freshStart + 1 }, (_, index) => index)
+  return omissions
+    .map((omitted) => boundedEvidence(evidence, omitted))
     .find(
       (bounded) =>
         packetBytes({ evidence: bounded, ownedSkills, candidates: candidatePacket(candidates) }) <=
@@ -200,7 +230,7 @@ export function boundPacket(
     }))
     .find((item) => item.evidence !== undefined)
   if (match?.evidence === undefined) {
-    throw new Error('review packet exceeds model input limit')
+    throw new Error('fresh review evidence exceeds model input limit')
   }
 
   return { evidence: match.evidence, candidates: match.candidates }

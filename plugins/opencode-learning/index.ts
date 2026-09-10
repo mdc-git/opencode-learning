@@ -5,6 +5,7 @@ import { registerLearningRpc } from './rpc-server.ts'
 import { createStore, PENDING_LIMIT, type Store } from './store.ts'
 
 const SUCCESSFUL_TURNS_PER_REVIEW = 3
+const REVIEW_LOOKBACK_TURNS = 2
 
 type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
 type SessionId = SessionRef['sessionID']
@@ -73,6 +74,7 @@ function finishAutomatic(state: SessionState, result: ReviewResult) {
 function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
   return runReview(runtime.ctx, runtime.store, sessionRef, {
     startAfter: state.reviewCursor,
+    lookbackTurns: REVIEW_LOOKBACK_TURNS,
     activity: runtime.activity
   }).pipe(
     Effect.flatMap((result) => finishAutomatic(state, result)),

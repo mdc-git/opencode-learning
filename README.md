@@ -32,12 +32,15 @@ Run OpenCode from the repository root after installing dependencies. The active 
 
 ## Learning loop
 
-Automatic review runs after every three successful primary root turns. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
+Automatic review runs after every three successful primary root turns. Each automatic review includes those fresh turns plus up to two preceding turns as overlapping context. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
 
-A review captures a fixed root-session history window, builds bounded evidence, selects up to five plugin-owned project skill candidates using explicit references and token overlap, and performs two transient model calls:
+Review evidence marks the boundary between overlapping context and fresh evidence. A create or patch must be materially supported by fresh evidence; context may complete or strengthen that support but cannot justify a proposal by itself. Packet bounding drops older overlapping context before candidate material and never drops fresh evidence.
+
+A review builds bounded evidence, selects up to five plugin-owned project skill candidates using explicit references and token overlap, and performs two transient model calls:
 
 ```text
 3 successful primary root turns
+  + up to 2 preceding turns of context
   -> reviewer
   -> deterministic materialization
   -> validator
@@ -47,9 +50,9 @@ A review captures a fixed root-session history window, builds bounded evidence, 
   -> native skill reload
 ```
 
-The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the exact proposed artifact and the evidence used for review. A rejected or empty review consumes that review interval.
+The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the exact proposed artifact and the evidence used for review. A rejected or empty review consumes the fresh review interval; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
 
-Manual `/learn` runs the same review pipeline synchronously over the current root session.
+Manual `/learn` runs the same review pipeline synchronously over the current root session and treats the captured session evidence as fresh.
 
 ## Terminal interaction
 

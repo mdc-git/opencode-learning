@@ -39,7 +39,11 @@ type ReflectionResult = {
   options: ReviewOptions
 }
 export type ReviewActivity = (event: LearningActivity) => Effect.Effect<void, unknown>
-export type ReviewOptions = { startAfter?: string; activity: ReviewActivity }
+export type ReviewOptions = {
+  startAfter?: string
+  lookbackTurns?: number
+  activity: ReviewActivity
+}
 type FinalizeInput = {
   ctx: Plugin.Context
   store: Store
@@ -69,12 +73,12 @@ function activity(
   return options.activity({ ...event, sessionId: ref.sessionID })
 }
 
-function reflectionCapture(all: Candidate[], startAfter?: string) {
-  let evidence: Evidence = { records: [], omitted: 0, authorizedPaths: [] }
+function reflectionCapture(all: Candidate[], options: ReviewOptions) {
+  let evidence: Evidence = { records: [], omitted: 0, authorizedPaths: [], freshStart: 0 }
   let candidates: Candidate[] = []
   return {
     prepare(messages: readonly unknown[], maxBytes: number): string {
-      const captured = captureEvidence(messages, startAfter)
+      const captured = captureEvidence(messages, options.startAfter, options.lookbackTurns)
       const selected = selectCandidates(all, captured)
       const overhead = encoder.encode(`${REFLECTOR}\n\n`).byteLength + 64
       const bounded = boundPacket(captured, all, selected, Math.max(1, maxBytes - overhead))
@@ -115,7 +119,7 @@ function reflect(
       message: 'learning reviewer started'
     })
     const all = yield* Effect.promise(async () => ownedCandidates(store))
-    const capture = reflectionCapture(all, options.startAfter)
+    const capture = reflectionCapture(all, options)
     const generated = yield* isolatedGenerate(ctx, sessionRef, capture.prepare)
     const { evidence, candidates } = capture.result()
     const reflection = decodeReflection(generated.text)

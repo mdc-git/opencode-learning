@@ -8,6 +8,7 @@ packet.evidence = {
   records: EvidenceRecord[],
   omitted: number,
   authorizedPaths: string[],
+  freshStart: number,
   endCursor?: string
 }
 
@@ -18,7 +19,8 @@ EvidenceRecord is one of:
 - {"type":"tool","tool":"name","outcome":"...","relevantInput":...,"metadata":...}: an assistant tool call. relevantInput is the tool input retained as evidence; metadata is tool-result metadata retained as evidence. Tool output text that is not present in these fields is not evidence.
 - {"type":"shell","status":"...","exit":number}: a shell execution summary. It proves only the recorded status and exit code unless commands/results also appear elsewhere in evidence.
 
-evidence.omitted is the number of older compacted records removed to fit the model input limit. Do not assume omitted records support any claim.
+evidence.records before evidence.freshStart are overlapping context from earlier reviewed turns. Records at and after evidence.freshStart are fresh evidence from the current review interval. A create or patch must be materially supported by fresh evidence; context may complete or strengthen that support but cannot justify a proposal by itself.
+evidence.omitted is the number of older context records removed to fit the model input limit. Fresh evidence is never omitted. Do not assume omitted records support any claim.
 evidence.authorizedPaths lists project paths observed in structured evidence and permitted as project file sources. Presence in authorizedPaths proves only that the path was observed, not the contents of that file unless those contents are also present in evidence.
 evidence.endCursor is an internal session cursor and has no semantic meaning for the learned procedure.
 
@@ -35,16 +37,17 @@ packet.candidates = [{
 Candidates are the small subset of owned skills considered potentially relevant. skillMd is actual existing skill content and may be preserved when patching. files is metadata for existing supporting files; it does not contain their contents. revision identifies the exact candidate version being reviewed.
 
 Choose exactly one outcome:
-- none: no sufficiently reusable, evidence-backed procedure is justified.
-- create: the evidence supports a reusable procedure that is not already represented by an owned skill.
-- patch: the evidence supports a useful improvement to one supplied candidate. For patch, skillId must equal that candidate's id.
+- none: no sufficiently reusable, fresh-evidence-backed procedure is justified.
+- create: fresh evidence supports a reusable procedure that is not already represented by an owned skill.
+- patch: fresh evidence supports a useful improvement to one supplied candidate. For patch, skillId must equal that candidate's id.
 
 Rules:
 - Base every learned instruction on the supplied evidence or preserved candidate content.
+- Require material support from records at or after evidence.freshStart for every create or patch.
 - Do not invent facts, commands, paths, APIs, constraints, outcomes, or guarantees.
 - Generalize only as far as the evidence supports.
 - Prefer patching an applicable candidate over creating a duplicate skill.
-- Return none for one-off facts, incidental fixes, session-specific data, trivial knowledge, or behavior already adequately covered by an owned skill.
+- Return none for one-off facts, incidental fixes, session-specific data, trivial knowledge, stale context without fresh support, or behavior already adequately covered by an owned skill.
 - A proposed skill must describe a reusable procedure an agent can apply later.
 - Preserve useful existing candidate guidance when patching. Change only what the evidence justifies.
 - skillId must use lowercase letters and digits separated by single hyphens.
@@ -79,6 +82,7 @@ packet.evidence has the same shape and meaning used by the reviewer:
   "records": EvidenceRecord[],
   "omitted": number,
   "authorizedPaths": string[],
+  "freshStart": number,
   "endCursor"?: string
 }
 EvidenceRecord meanings:
@@ -87,7 +91,7 @@ EvidenceRecord meanings:
 - assistant text: {"type":"text","text":"..."}
 - assistant tool call: {"type":"tool","tool":"name","outcome":"...","relevantInput":...,"metadata":...}
 - shell summary: {"type":"shell","status":"...","exit":number}
-Only information actually present in these records is evidence. omitted records are unavailable and must not be assumed. authorizedPaths proves path observation/authorization, not file contents.
+Only information actually present in these records is evidence. Records before freshStart are overlapping context; records at and after freshStart are fresh evidence from the current review interval. omitted records are unavailable context and must not be assumed. Fresh evidence is never omitted. authorizedPaths proves path observation/authorization, not file contents.
 
 packet.ownedSkills = [{"id":"skill-id","description":"..."}, ...]
 This is the complete owned-skill catalog for duplicate detection.
@@ -119,13 +123,14 @@ Reject if any material requirement below fails.
 
 Evidence support:
 - Every new factual claim, command, API behavior, constraint, path assumption, and procedural step visible in skillMd or generatedFiles must be supported by supplied evidence.
+- The proposal must have material support in records at or after evidence.freshStart. Earlier context may complete or strengthen fresh support but cannot justify a proposal by itself.
 - Existing candidate content may be preserved in a patch without new evidence, but unsupported new claims must be rejected.
 - Reject invented details or conclusions stronger than the evidence supports.
 - Generalization must remain conservative.
 
 Usefulness:
 - The proposal must capture a reusable procedure or durable operational lesson.
-- Reject one-off facts, incidental troubleshooting details, session-specific data, trivial knowledge, or changes too narrow to be useful later.
+- Reject one-off facts, incidental troubleshooting details, session-specific data, trivial knowledge, stale context without fresh support, or changes too narrow to be useful later.
 
 Non-duplication and targeting:
 - Reject a create proposal if an owned skill already covers the procedure and should be patched instead.
@@ -145,6 +150,6 @@ Safety:
 - Reject instructions that encode unsafe, destructive, insecure, or unjustified behavior.
 - Reject procedures that weaken established project constraints without explicit evidence.
 
-Accept only when the proposal is clearly evidence-backed, reusable, non-duplicative, internally consistent, and safe within what the packet actually allows you to verify. When rejecting, reason must identify the most important concrete defect.
+Accept only when the proposal is clearly evidence-backed, fresh-supported, reusable, non-duplicative, internally consistent, and safe within what the packet actually allows you to verify. When rejecting, reason must identify the most important concrete defect.
 
 Return exactly {"accept":true,"reason":"..."} or {"accept":false,"reason":"..."}. Return JSON only, with no markdown fences or commentary.`
