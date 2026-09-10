@@ -5,16 +5,22 @@ import { Effect } from 'effect'
 import type { ReviewResult } from './review.ts'
 import type { Store } from './store.ts'
 
-type SessionId = Parameters<Plugin.Context['session']['get']>[0]['sessionID']
+type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
+type SessionId = SessionRef['sessionID']
+type CommandInvocation = Parameters<
+  Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]['add']
+>[0]['execute'] extends (input: infer Input) => unknown
+  ? Input
+  : never
 type CommandEditor = Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]
 type Learn = (sessionId: SessionId) => Effect.Effect<ReviewResult, unknown>
 
 function emit(
   ctx: Plugin.Context,
-  sessionId: SessionId,
+  invocation: CommandInvocation,
   text: string
 ): Effect.Effect<void, unknown> {
-  return ctx.session.synthetic({ sessionID: sessionId, text, resume: false }).pipe(Effect.asVoid)
+  return ctx.session.synthetic({ ...invocation, text, resume: false }).pipe(Effect.asVoid)
 }
 
 function resultText(result: ReviewResult): string {
@@ -32,10 +38,10 @@ function resultText(result: ReviewResult): string {
 
 function runCommand(
   ctx: Plugin.Context,
-  sessionId: SessionId,
+  invocation: CommandInvocation,
   effect: Effect.Effect<string, unknown>
 ): Effect.Effect<void, unknown> {
-  return ctx.session.get({ sessionID: sessionId }).pipe(
+  return ctx.session.get(invocation).pipe(
     Effect.flatMap((session) =>
       session.parentID === undefined
         ? effect
@@ -44,7 +50,7 @@ function runCommand(
     Effect.catch((error) =>
       Effect.succeed(`error: ${error instanceof Error ? error.message : String(error)}`)
     ),
-    Effect.flatMap((text) => emit(ctx, sessionId, text))
+    Effect.flatMap((text) => emit(ctx, invocation, text))
   )
 }
 
@@ -89,8 +95,12 @@ function addLearn(editor: CommandEditor, ctx: Plugin.Context, learn: Learn): voi
   editor.add({
     name: 'learn',
     description: 'Review this root session for one reusable procedural skill.',
-    execute({ sessionID }) {
-      return runCommand(ctx, sessionID, learn(sessionID).pipe(Effect.map(resultText)))
+    execute(invocation) {
+      return runCommand(
+        ctx,
+        invocation,
+        learn(invocation.sessionID).pipe(Effect.map(resultText))
+      )
     }
   })
 }
@@ -99,11 +109,11 @@ function addPending(editor: CommandEditor, ctx: Plugin.Context, store: Store): v
   editor.add({
     name: 'learn-pending',
     description: 'List or inspect staged learning proposals.',
-    execute({ sessionID, prompt }) {
+    execute(invocation) {
       return runCommand(
         ctx,
-        sessionID,
-        storeEffect(async () => pendingText(store, prompt.text.trim()))
+        invocation,
+        storeEffect(async () => pendingText(store, invocation.prompt.text.trim()))
       )
     }
   })
@@ -113,8 +123,8 @@ function addApprove(editor: CommandEditor, ctx: Plugin.Context, store: Store): v
   editor.add({
     name: 'learn-approve',
     description: 'Apply one exact staged proposal and reload skills.',
-    execute({ sessionID, prompt }) {
-      const id = prompt.text.trim()
+    execute(invocation) {
+      const id = invocation.prompt.text.trim()
       const operation = storeEffect(async () => {
         const skillId = await store.approve(id)
         try {
@@ -124,7 +134,7 @@ function addApprove(editor: CommandEditor, ctx: Plugin.Context, store: Store): v
           return `approved ${id}: ${skillId}; skill reload failed: ${String(error)}`
         }
       })
-      return runCommand(ctx, sessionID, operation)
+      return runCommand(ctx, invocation, operation)
     }
   })
 }
@@ -133,11 +143,11 @@ function addReject(editor: CommandEditor, ctx: Plugin.Context, store: Store): vo
   editor.add({
     name: 'learn-reject',
     description: 'Delete one exact staged proposal.',
-    execute({ sessionID, prompt }) {
-      const id = prompt.text.trim()
+    execute(invocation) {
+      const id = invocation.prompt.text.trim()
       return runCommand(
         ctx,
-        sessionID,
+        invocation,
         storeEffect(async () => {
           await store.reject(id)
           return `rejected ${id}`
@@ -151,11 +161,11 @@ function addPromote(editor: CommandEditor, ctx: Plugin.Context, store: Store): v
   editor.add({
     name: 'learn-promote',
     description: 'Replace the global copy of one owned project skill.',
-    execute({ sessionID, prompt }) {
-      const skillId = prompt.text.trim()
+    execute(invocation) {
+      const skillId = invocation.prompt.text.trim()
       return runCommand(
         ctx,
-        sessionID,
+        invocation,
         storeEffect(async () => {
           await store.promote(skillId)
           await Effect.runPromise(ctx.skill.reload())
