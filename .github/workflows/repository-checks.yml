@@ -2,7 +2,7 @@ name: Repository checks
 
 on:
   push:
-    branches: [master]
+    branches: [master, simplification]
   pull_request:
   workflow_dispatch:
 
@@ -56,7 +56,9 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -u
-          git commit -m "style: apply automatic repository fixes"
+          git commit \
+            -m "style: apply repository automatic fixes" \
+            -m "Apply the repository's configured dependency cleanup, ESLint fixes, and Prettier formatting with the exact CI-installed toolchain so the checked-in sources satisfy the authoritative validation rules."
           git push
 
       - name: Refresh dependencies after fixes
