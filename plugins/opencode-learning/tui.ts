@@ -221,28 +221,28 @@ function learningCommands(context: Context, rpc: LearningClient) {
       id: 'learning.pending',
       title: 'Show pending skill proposals',
       group: 'Learning',
-      slash: { name: 'learn-pending', arguments: true },
+      slash: { name: 'learn-pending', arguments: true as const },
       run: async (input?: string) => showPending(context, rpc, input)
     },
     {
       id: 'learning.approve',
       title: 'Approve a pending skill proposal',
       group: 'Learning',
-      slash: { name: 'learn-approve', arguments: true },
+      slash: { name: 'learn-approve', arguments: true as const },
       run: async (input?: string) => approve(context, rpc, input)
     },
     {
       id: 'learning.reject',
       title: 'Reject a pending skill proposal',
       group: 'Learning',
-      slash: { name: 'learn-reject', arguments: true },
+      slash: { name: 'learn-reject', arguments: true as const },
       run: async (input?: string) => reject(context, rpc, input)
     },
     {
       id: 'learning.promote',
       title: 'Promote a project skill globally',
       group: 'Learning',
-      slash: { name: 'learn-promote', arguments: true },
+      slash: { name: 'learn-promote', arguments: true as const },
       run: async (input?: string) => promote(context, rpc, input)
     }
   ]

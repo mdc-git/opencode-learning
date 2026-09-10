@@ -193,7 +193,7 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
     }
 
     const proposal = proposalFor(input.reflection, input.result.evidence, input.candidate)
-    const root = input.materialized.root
+    const { root } = input.materialized
     yield* Effect.promise(async () => input.store.stage(proposal, root, input.id))
     yield* activity(input.result.options, input.sessionRef, {
       kind: 'proposal-staged',
