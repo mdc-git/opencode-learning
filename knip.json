@@ -1,4 +1,4 @@
 {
-  "entry": ["plugins/opencode-learning/scoring.ts"],
+  "entry": ["plugins/opencode-learning/index.ts"],
   "project": ["plugins/**/*.ts"]
 }

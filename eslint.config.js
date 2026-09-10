@@ -81,7 +81,7 @@ export default defineConfig([
   {
     files: ['package.json'],
     rules: {
-      'package-json/dependency-version-range': ['error', { exceptions: ['@opencode/plugin'] }],
+      'package-json/dependency-version-range': ['error', { exceptions: ['effect'] }],
       'package-json/no-dist-tag-dependencies': 'off'
     }
   }
