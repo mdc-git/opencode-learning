@@ -6,14 +6,13 @@ import type { ReviewResult } from './review.ts'
 import type { Store } from './store.ts'
 
 type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
-type SessionId = SessionRef['sessionID']
 type CommandInvocation = Parameters<
   Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]['add']
 >[0]['execute'] extends (input: infer Input) => unknown
   ? Input
   : never
 type CommandEditor = Parameters<Parameters<Plugin.Context['command']['transform']>[0]>[0]
-type Learn = (sessionId: SessionId) => Effect.Effect<ReviewResult, unknown>
+type Learn = (sessionRef: SessionRef) => Effect.Effect<ReviewResult, unknown>
 
 function emit(
   ctx: Plugin.Context,
@@ -96,11 +95,7 @@ function addLearn(editor: CommandEditor, ctx: Plugin.Context, learn: Learn): voi
     name: 'learn',
     description: 'Review this root session for one reusable procedural skill.',
     execute(invocation) {
-      return runCommand(
-        ctx,
-        invocation,
-        learn(invocation.sessionID).pipe(Effect.map(resultText))
-      )
+      return runCommand(ctx, invocation, learn(invocation).pipe(Effect.map(resultText)))
     }
   })
 }
