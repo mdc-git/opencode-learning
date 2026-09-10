@@ -255,11 +255,20 @@ export default Plugin.define({
         activityToast(context, event.data)
       }
     })
+    const stopCommands = context.ui.slot({
+      append: 'app',
+      render: () => {
+        context.keymap.layer(() => ({
+          mode: 'global',
+          commands: learningCommands(context, rpc)
+        }))
+        return null
+      }
+    })
 
-    context.keymap.layer(() => ({
-      mode: 'global',
-      commands: learningCommands(context, rpc)
-    }))
-    return stopActivity
+    return () => {
+      stopCommands()
+      stopActivity()
+    }
   }
 })
