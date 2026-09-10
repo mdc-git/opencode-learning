@@ -28,7 +28,7 @@ type ProposedFile =
   | { path: string; content: string; executable: boolean }
   | { path: string; source: { from: 'project' | 'candidate'; path: string } }
 
-type ProposedSkillFiles = { skillMd: string; files: ProposedFile[] }
+type ProposedSkillFiles = { skillMd: string; files: ReadonlyArray<ProposedFile> }
 
 type MaterializeOptions = {
   project: string
@@ -100,43 +100,55 @@ async function scanDirectory(root: string, current: string): Promise<FileManifes
   return nested.flat()
 }
 
-export async function scanSkillTree(root: string): Promise<TreeScan> {
+async function assertSkillRoot(root: string): Promise<void> {
   const stat = await fs.lstat(root)
   if (!stat.isDirectory() || stat.isSymbolicLink()) {
     throw new Error('skill root must be a real directory')
   }
+}
 
-  const files = (await scanDirectory(root, root)).toSorted((left, right) =>
-    left.path.localeCompare(right.path)
-  )
-  const totalSize = files.reduce((sum, file) => sum + file.size, 0)
-  if (totalSize > TREE_LIMIT) {
+function treeSize(files: FileManifest[]): number {
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  if (total > TREE_LIMIT) {
     throw new Error('skill tree exceeds 100 MiB')
   }
 
+  return total
+}
+
+async function treeRevision(root: string, files: FileManifest[]): Promise<string> {
   const contents = await Promise.all(
     files.map(async (file) => fs.readFile(path.join(root, file.path)))
   )
   const revision = crypto.createHash('sha256')
   for (const [index, file] of files.entries()) {
-    revision
-      .update(file.path)
-      .update('\0')
-      .update(file.executable ? '1' : '0')
-      .update('\0')
+    revision.update(file.path).update('\0')
+    revision.update(file.executable ? '1' : '0').update('\0')
     revision.update(contents[index] ?? new Uint8Array()).update('\0')
   }
 
-  return { files, totalSize, revision: revision.digest('hex') }
+  return revision.digest('hex')
 }
 
-function skillDocument(text: string) {
+export async function scanSkillTree(root: string): Promise<TreeScan> {
+  await assertSkillRoot(root)
+  const scanned = await scanDirectory(root, root)
+  const files = scanned.toSorted((left, right) => left.path.localeCompare(right.path))
+  const totalSize = treeSize(files)
+  const revision = await treeRevision(root, files)
+  return { files, totalSize, revision }
+}
+
+function frontmatterMatch(text: string): RegExpExecArray {
   const match = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---\r?\n(?<body>[\s\S]*)$/v.exec(text)
   if (match?.groups === undefined) {
     throw new Error('SKILL.md requires YAML frontmatter')
   }
 
-  const document = parseDocument(match.groups.yaml ?? '')
+  return match
+}
+
+function frontmatterData(document: ReturnType<typeof parseDocument>): Record<string, unknown> {
   if (document.errors.length > 0) {
     throw new Error(`invalid SKILL.md frontmatter: ${document.errors[0]?.message}`)
   }
@@ -146,7 +158,17 @@ function skillDocument(text: string) {
     throw new Error('skill frontmatter must be a mapping')
   }
 
-  return { document, data: data as Record<string, unknown>, body: match.groups.body ?? '' }
+  return data as Record<string, unknown>
+}
+
+function skillDocument(text: string) {
+  const match = frontmatterMatch(text)
+  const document = parseDocument(match.groups?.yaml ?? '')
+  return {
+    document,
+    data: frontmatterData(document),
+    body: match.groups?.body ?? ''
+  }
 }
 
 function requireDescription(data: Record<string, unknown>): string {
@@ -222,56 +244,83 @@ export async function copySkillTree(source: string, destination: string): Promis
   )
 }
 
-function invalidDestination(relative: string): boolean {
-  if (relative === 'SKILL.md' || path.isAbsolute(relative) || relative.includes('\\')) {
+function isInvalidDestination(relative: string): boolean {
+  if (['SKILL.md'].includes(relative) || path.isAbsolute(relative) || relative.includes('\\')) {
     return true
   }
 
-  return relative.split('/').some((part) => part === '' || part === '.' || part === '..')
+  return relative.split('/').some((part) => ['', '.', '..'].includes(part))
+}
+
+function generatedSizes(skill: ProposedSkillFiles): number[] {
+  return skill.files
+    .filter((file): file is Extract<ProposedFile, { content: string }> => 'content' in file)
+    .map((file) => encoder.encode(file.content).byteLength)
 }
 
 function validateGenerated(skill: ProposedSkillFiles): void {
-  const sizes = skill.files
-    .filter((file): file is Extract<ProposedFile, { content: string }> => 'content' in file)
-    .map((file) => encoder.encode(file.content).byteLength)
+  const sizes = generatedSizes(skill)
   if (sizes.some((size) => size > GENERATED_FILE_LIMIT)) {
     throw new Error('generated supporting file exceeds 1 MiB')
   }
 
-  const total =
-    encoder.encode(skill.skillMd).byteLength + sizes.reduce((sum, size) => sum + size, 0)
+  const total = encoder.encode(skill.skillMd).byteLength + sizes.reduce((sum, size) => sum + size, 0)
   if (total > GENERATED_TOTAL_LIMIT) {
     throw new Error('generated content exceeds 10 MiB')
   }
 
   const paths = skill.files.map((file) => file.path)
-  if (new Set(paths).size !== paths.length || paths.some(invalidDestination)) {
+  const hasInvalidPath = paths.some((item) => isInvalidDestination(item))
+  if (new Set(paths).size !== paths.length || hasInvalidPath) {
     throw new Error('supporting file paths must be unique safe relative paths')
   }
 }
 
-function sourcePath(
-  options: MaterializeOptions,
-  file: Extract<ProposedFile, { source: unknown }>
-): string {
-  if (file.source.from === 'candidate') {
-    const { candidate } = options
-    if (!candidate?.manifest.some((item) => item.path === file.source.path)) {
-      throw new Error('invalid candidate source')
-    }
-
-    return safeChild(candidate.root, file.source.path)
+function candidateSource(options: MaterializeOptions, source: string): string {
+  const { candidate } = options
+  const isKnown = candidate?.manifest.some((item) => item.path === source) === true
+  if (!isKnown || candidate === undefined) {
+    throw new Error('invalid candidate source')
   }
 
-  const projectSource = safeChild(options.project, file.source.path)
+  return safeChild(candidate.root, source)
+}
+
+function projectSource(options: MaterializeOptions, source: string): string {
+  const resolved = safeChild(options.project, source)
   const isAuthorized = options.authorizedPaths.some(
-    (item) => path.resolve(options.project, item) === projectSource
+    (item) => path.resolve(options.project, item) === resolved
   )
   if (!isAuthorized) {
     throw new Error('project source was not authorized by structured evidence')
   }
 
-  return projectSource
+  return resolved
+}
+
+function sourcePath(options: MaterializeOptions, file: Extract<ProposedFile, { source: unknown }>) {
+  return file.source.from === 'candidate'
+    ? candidateSource(options, file.source.path)
+    : projectSource(options, file.source.path)
+}
+
+async function writeGenerated(target: string, file: Extract<ProposedFile, { content: string }>) {
+  await fs.writeFile(target, file.content, { mode: file.executable ? 0o755 : 0o644 })
+}
+
+async function writeSource(
+  options: MaterializeOptions,
+  target: string,
+  file: Extract<ProposedFile, { source: unknown }>
+): Promise<void> {
+  const source = sourcePath(options, file)
+  const stat = await fs.lstat(source)
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('source must be a regular non-symlink file')
+  }
+
+  await fs.copyFile(source, target)
+  await fs.chmod(target, isExecutable(stat.mode) ? 0o755 : 0o644)
 }
 
 async function writeProposedFile(
@@ -281,19 +330,9 @@ async function writeProposedFile(
 ): Promise<void> {
   const target = safeChild(skillRoot, file.path)
   await fs.mkdir(path.dirname(target), { recursive: true })
-  if ('content' in file) {
-    await fs.writeFile(target, file.content, { mode: file.executable ? 0o755 : 0o644 })
-    return
-  }
-
-  const source = sourcePath(options, file)
-  const stat = await fs.lstat(source)
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error('source must be a regular non-symlink file')
-  }
-
-  await fs.copyFile(source, target)
-  await fs.chmod(target, isExecutable(stat.mode) ? 0o755 : 0o644)
+  return 'content' in file
+    ? writeGenerated(target, file)
+    : writeSource(options, target, file)
 }
 
 export async function materializeSkill(options: MaterializeOptions) {
