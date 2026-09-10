@@ -105,13 +105,15 @@ function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: Session
 }
 
 function eligibleContext(runtime: Runtime, sessionRef: SessionRef) {
-  return runtime.ctx.session.get(sessionRef).pipe(
-    Effect.flatMap((session) =>
-      session.parentID === undefined
-        ? runtime.ctx.session.context(sessionRef)
-        : Effect.succeed(undefined)
+  return runtime.ctx.session
+    .get(sessionRef)
+    .pipe(
+      Effect.flatMap((session) =>
+        session.parentID === undefined
+          ? runtime.ctx.session.context(sessionRef)
+          : Effect.succeed(undefined)
+      )
     )
-  )
 }
 
 function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {

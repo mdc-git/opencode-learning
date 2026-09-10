@@ -17,7 +17,7 @@
     "check:deps": "depcruise --config .dependency-cruiser.mjs index.ts plugins/opencode-learning",
     "check:knip": "knip",
     "format": "prettier . --write",
-    "format:check": "prettier . --write && git diff --exit-code",
+    "format:check": "prettier . --check",
     "lint": "eslint .",
     "test": "node --test test/local-plugin.test.mjs",
     "typecheck": "tsc --noEmit"
