@@ -20,21 +20,33 @@ function skill(description, body = '# Learned\n\nDo the verified thing.\n') {
   return `---\ndescription: ${description}\nmetadata:\n  opencode-learning/owner: "true"\n---\n${body}`
 }
 
-async function api(base, requestPath, options = {}) {
+async function fetchApi(base, requestPath, options) {
   try {
-    const response = await fetch(new URL(requestPath, base), {
+    return await fetch(new URL(requestPath, base), {
       ...options,
       signal: options.signal ?? AbortSignal.timeout(10_000),
       headers: { authorization, 'content-type': 'application/json', ...options.headers }
     })
-    if (!response.ok) {
-      throw new Error(`${response.status}: ${await response.text()}`)
-    }
-
-    return response.status === 204 ? undefined : response.json()
   } catch (error) {
     throw new Error(`${requestPath}: ${String(error)}`, { cause: error })
   }
+}
+
+async function decodeApi(response) {
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${await response.text()}`)
+  }
+
+  if (response.status === 204) {
+    return undefined
+  }
+
+  return response.json()
+}
+
+async function api(base, requestPath, options = {}) {
+  const response = await fetchApi(base, requestPath, options)
+  return decodeApi(response)
 }
 
 async function serverUrl(server) {
@@ -112,26 +124,58 @@ function locationQuery(project) {
   return `?location%5Bdirectory%5D=${encodeURIComponent(project)}`
 }
 
-async function pluginState(base, project) {
-  const plugins = await api(base, `/api/plugin${locationQuery(project)}`)
-  const registered = await api(base, `/api/command${locationQuery(project)}`)
+async function pluginSnapshot(base, project) {
+  const [plugins, registered] = await Promise.all([
+    api(base, `/api/plugin${locationQuery(project)}`),
+    api(base, `/api/command${locationQuery(project)}`)
+  ])
   const plugin = plugins.data.find((item) => item.id === 'github.learning_skills')
-  const hasCommands = commands.every((name) => registered.data.some((item) => item.name === name))
-  return plugin?.state?.status === 'active' && hasCommands ? plugin : undefined
+  const commandNames = registered.data
+    .map((item) => item.name)
+    .filter((name) => name.startsWith('learn'))
+  return { plugin, commandNames }
 }
 
-async function waitForPlugin(base, project, diagnostics, deadline = Date.now() + 15_000) {
-  const plugin = await pluginState(base, project)
-  if (plugin !== undefined) {
-    return plugin
-  }
+function isActivated(snapshot) {
+  return (
+    snapshot.plugin?.state?.status === 'active' &&
+    commands.every((name) => snapshot.commandNames.includes(name))
+  )
+}
 
-  if (Date.now() >= deadline) {
-    throw new Error(`learning plugin did not activate\n${diagnostics()}`)
-  }
+function activationError(snapshot, diagnostics) {
+  return new Error(
+    `learning plugin did not activate\nstate=${JSON.stringify(snapshot, null, 2)}\nstderr=${diagnostics()}`
+  )
+}
 
-  await delay(100)
-  return waitForPlugin(base, project, diagnostics, deadline)
+function waitForPlugin(base, project, diagnostics) {
+  return new Promise((resolve, reject) => {
+    let lastSnapshot = { commandNames: [] }
+    const finish = (timer, interval, result) => {
+      clearTimeout(timer)
+      clearInterval(interval)
+      result()
+    }
+    const timer = setTimeout(() => {
+      finish(timer, interval, () => reject(activationError(lastSnapshot, diagnostics)))
+    }, 15_000)
+    const check = () => {
+      pluginSnapshot(base, project).then(
+        (snapshot) => {
+          lastSnapshot = snapshot
+          if (isActivated(snapshot)) {
+            finish(timer, interval, () => resolve(snapshot.plugin))
+          }
+        },
+        (error) => {
+          finish(timer, interval, () => reject(error))
+        }
+      )
+    }
+    const interval = setInterval(check, 100)
+    check()
+  })
 }
 
 async function runCommand(base, sessionID, command, text = '') {
@@ -204,13 +248,17 @@ async function exercisePlugin(root, project) {
   try {
     const base = await serverUrl(running.child)
     const session = await createSession(base, project)
-    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, { method: 'POST', body: '{}' })
+    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, {
+      method: 'POST',
+      body: '{}'
+    })
     const plugin = await waitForPlugin(base, project, running.diagnostics)
     assert.equal(plugin.source.type, 'local')
     await assertCommands(base, project)
     await assertCreateApproval(base, project, session.data.id)
     await assertReject(base, project, session.data.id)
     await assertPromotion(base, project, root, session.data.id)
+    return plugin.id
   } finally {
     await stopServer(running.child)
   }
@@ -220,7 +268,7 @@ test('package-root plugin exposes only the current learning surface and stages e
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   const project = path.join(root, 'project')
   try {
-    await exercisePlugin(root, project)
+    assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
