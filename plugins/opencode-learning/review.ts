@@ -14,6 +14,8 @@ import {
   type Candidate,
   type Evidence
 } from './evidence.ts'
+import type { ProposalMetadata } from './proposal.ts'
+import { proposalFor, validatorPacket } from './review-packet.ts'
 import {
   decodeReflection,
   decodeValidation,
@@ -22,7 +24,7 @@ import {
   type Validation
 } from './review-schema.ts'
 import { materializeSkill, scanSkillTree } from './skill-files.ts'
-import { PENDING_LIMIT, type ProposalMetadata, type Store } from './store.ts'
+import { PENDING_LIMIT, type Store } from './store.ts'
 
 const SKILL_ID = /^[0-9a-z]+(?:-[0-9a-z]+)*$/v
 const REFLECTOR =
@@ -168,7 +170,13 @@ function reflect(
     const capture = reflectionCapture(all, startAfter)
     const generated = yield* isolatedGenerate(ctx, sessionRef, capture.prepare)
     const { evidence, candidates } = capture.result()
-    return { reflection: decodeReflection(generated.text), evidence, candidates, all, model: generated.model }
+    return {
+      reflection: decodeReflection(generated.text),
+      evidence,
+      candidates,
+      all,
+      model: generated.model
+    }
   })
 }
 
@@ -180,44 +188,6 @@ async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Pr
   const current = await scanSkillTree(path.join(store.projectSkills, candidate.id))
   if (current.revision !== candidate.revision) {
     throw new Error('patch candidate changed during review')
-  }
-}
-
-function proposalFor(
-  reflection: ActiveReflection,
-  evidence: Evidence,
-  candidate?: Candidate
-): ProposalMetadata {
-  return {
-    kind: reflection.kind,
-    skillId: reflection.skillId,
-    reason: reflection.reason,
-    evidence,
-    ...(candidate !== undefined && { expectedRevision: candidate.revision })
-  }
-}
-
-function sourceSnapshots(reflection: ActiveReflection, files: ReadonlyArray<{ path: string }>) {
-  const sourcePaths = new Set(
-    reflection.skill.files.filter((file) => 'source' in file).map((file) => file.path)
-  )
-  return files.filter((file) => sourcePaths.has(file.path))
-}
-
-function validatorPacket(
-  reflection: ActiveReflection,
-  result: ReflectionResult,
-  files: ReadonlyArray<{ path: string }>
-) {
-  return {
-    evidence: result.evidence,
-    ownedSkills: catalog(result.all),
-    candidates: candidatePacket(result.candidates),
-    proposal: { kind: reflection.kind, skillId: reflection.skillId },
-    skillMd: reflection.skill.skillMd,
-    generatedFiles: reflection.skill.files.filter((file) => 'content' in file),
-    sourceSnapshots: sourceSnapshots(reflection, files),
-    manifest: files
   }
 }
 
@@ -249,7 +219,11 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
   return Effect.gen(function* () {
     const validation = yield* validateMaterialized(input)
     if (!validation.accept) {
-      return { kind: 'rejected', reason: validation.reason, endCursor: input.result.evidence.endCursor }
+      return {
+        kind: 'rejected',
+        reason: validation.reason,
+        endCursor: input.result.evidence.endCursor
+      }
     }
 
     const pending = yield* Effect.promise(async () => input.store.pendingCount())
@@ -258,8 +232,15 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
     }
 
     const proposal = proposalFor(input.reflection, input.result.evidence, input.candidate)
-    yield* Effect.promise(async () => input.store.stage(proposal, input.materialized.root, input.id))
-    return { kind: 'staged', id: input.id, proposal, endCursor: input.result.evidence.endCursor }
+    yield* Effect.promise(async () =>
+      input.store.stage(proposal, input.materialized.root, input.id)
+    )
+    return {
+      kind: 'staged',
+      id: input.id,
+      proposal,
+      endCursor: input.result.evidence.endCursor
+    }
   })
 }
 
@@ -270,7 +251,8 @@ function materializeProposal(
   candidate?: Candidate
 ) {
   const id = crypto.randomUUID()
-  const candidateRoot = candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
+  const candidateRoot =
+    candidate === undefined ? undefined : path.join(store.projectSkills, candidate.id)
   return Effect.promise(async () =>
     materializeSkill({
       project: store.project,
@@ -291,9 +273,13 @@ function activeReflection(
   sessionRef: SessionRef,
   result: ReflectionResult
 ): Effect.Effect<ReviewResult, unknown> {
-  const reflection = result.reflection
+  const { reflection } = result
   if (reflection.kind === 'none') {
-    return Effect.succeed({ kind: 'none', reason: reflection.reason, endCursor: result.evidence.endCursor })
+    return Effect.succeed({
+      kind: 'none',
+      reason: reflection.reason,
+      endCursor: result.evidence.endCursor
+    })
   }
 
   return Effect.gen(function* () {
@@ -305,8 +291,19 @@ function activeReflection(
 
     yield* Effect.promise(async () => assertCandidateUnchanged(store, candidate))
     const { id, materialized } = yield* materializeProposal(store, reflection, result, candidate)
-    const finalize = finalizeProposal({ ctx, store, sessionRef, result, reflection, candidate, id, materialized })
-    const cleanup = Effect.promise(async () => fs.rm(materialized.root, { recursive: true, force: true }))
+    const finalize = finalizeProposal({
+      ctx,
+      store,
+      sessionRef,
+      result,
+      reflection,
+      candidate,
+      id,
+      materialized
+    })
+    const cleanup = Effect.promise(async () =>
+      fs.rm(materialized.root, { recursive: true, force: true })
+    )
     return yield* finalize.pipe(Effect.ensuring(cleanup))
   })
 }
