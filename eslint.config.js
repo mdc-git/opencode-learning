@@ -31,7 +31,7 @@ export default defineConfig([
         { pattern: 'plugins/opencode-learning/index.ts', category: 'entry' },
         {
           pattern:
-            'plugins/opencode-learning/{commands,evidence,review,review-schema,skill-files,store}.ts',
+            'plugins/opencode-learning/{commands,evidence,proposal,review,review-packet,review-schema,skill-files,skill-markdown,store}.ts',
           category: 'core'
         }
       ]
