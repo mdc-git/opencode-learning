@@ -72,10 +72,7 @@ function compareScore(left: CandidateScore, right: CandidateScore): number {
   return left.candidate.id.localeCompare(right.candidate.id)
 }
 
-export function selectCandidates(
-  all: Candidate[],
-  evidence: { records: unknown[] }
-): Candidate[] {
+export function selectCandidates(all: Candidate[], evidence: { records: unknown[] }): Candidate[] {
   const text = JSON.stringify(evidence.records)
   const words = tokens(text)
   return all

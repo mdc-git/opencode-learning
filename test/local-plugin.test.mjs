@@ -67,8 +67,7 @@ async function serverUrl(server) {
 function isolatedEnvironment(root) {
   const inherited = Object.fromEntries(
     Object.entries(process.env).filter(
-      ([name]) =>
-        !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
+      ([name]) => !name.startsWith('OPENCODE_') && !['HOME', 'TMPDIR', 'TMP', 'TEMP'].includes(name)
     )
   )
   return {
@@ -281,15 +280,12 @@ async function exercisePlugin(root, project) {
   }
 }
 
-test(
-  'package-root plugin exposes only the current learning surface and stages explicit filesystem changes',
-  async () => {
-    const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
-    const project = path.join(root, 'project')
-    try {
-      assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
+test('package-root plugin exposes only the current learning surface and stages explicit filesystem changes', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
+  const project = path.join(root, 'project')
+  try {
+    assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
+  } finally {
+    await rm(root, { recursive: true, force: true })
   }
-)
+})

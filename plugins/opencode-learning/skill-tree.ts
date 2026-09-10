@@ -135,11 +135,7 @@ export async function validateSkillTree(root: string, isOwned: boolean): Promise
   return scan
 }
 
-async function atomicWrite(
-  file: string,
-  bytes: Uint8Array | string,
-  mode: number
-): Promise<void> {
+async function atomicWrite(file: string, bytes: Uint8Array | string, mode: number): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true })
   const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`
   await fs.writeFile(temporary, bytes, { mode })
@@ -152,11 +148,7 @@ export async function copySkillTree(source: string, destination: string): Promis
   await Promise.all(
     scan.files.map(async (file) => {
       const bytes = await fs.readFile(path.join(source, file.path))
-      await atomicWrite(
-        safeChild(destination, file.path),
-        bytes,
-        file.executable ? 0o755 : 0o644
-      )
+      await atomicWrite(safeChild(destination, file.path), bytes, file.executable ? 0o755 : 0o644)
     })
   )
   const wanted = new Set(scan.files.map((file) => file.path))

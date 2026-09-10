@@ -1,12 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { addOwnership } from './skill-markdown.ts'
-import {
-  isExecutable,
-  safeChild,
-  validateSkillTree,
-  type FileManifest
-} from './skill-tree.ts'
+import { isExecutable, safeChild, validateSkillTree, type FileManifest } from './skill-tree.ts'
 
 const GENERATED_FILE_LIMIT = 1024 * 1024
 const GENERATED_TOTAL_LIMIT = 10 * 1024 * 1024
@@ -128,9 +123,7 @@ async function writeProposedFile(
 ): Promise<void> {
   const target = safeChild(skillRoot, file.path)
   await fs.mkdir(path.dirname(target), { recursive: true })
-  return 'content' in file
-    ? writeGenerated(target, file)
-    : writeSource(options, target, file)
+  return 'content' in file ? writeGenerated(target, file) : writeSource(options, target, file)
 }
 
 export async function materializeSkill(options: MaterializeOptions) {

@@ -121,9 +121,7 @@ async function pendingEntry(paths: StorePaths, id: string) {
 async function listPending(paths: StorePaths): Promise<PendingProposal[]> {
   const ids = await pendingIds(paths)
   const entries = await Promise.all(ids.map(async (id) => pendingEntry(paths, id)))
-  return entries
-    .toSorted((left, right) => right.mtime - left.mtime)
-    .map((entry) => entry.proposal)
+  return entries.toSorted((left, right) => right.mtime - left.mtime).map((entry) => entry.proposal)
 }
 
 function isSameFile(left: FileManifest, right: FileManifest): boolean {
@@ -153,10 +151,7 @@ async function patchStatus(paths: StorePaths, proposal: PendingProposal) {
   }
 
   try {
-    const current = await validateSkillTree(
-      safeChild(paths.projectSkills, proposal.skillId),
-      true
-    )
+    const current = await validateSkillTree(safeChild(paths.projectSkills, proposal.skillId), true)
     return {
       isStale: current.revision !== proposal.expectedRevision,
       files: fileStatuses(staged, current)
