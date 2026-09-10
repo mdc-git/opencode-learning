@@ -18,8 +18,7 @@ function frontmatterGroups(text: string): Record<string, string> {
 }
 
 function group(groups: Record<string, string>, key: string): string {
-  const value = groups[key]
-  return value === undefined ? '' : value
+  return groups[key] ?? ''
 }
 
 function frontmatterData(document: ReturnType<typeof parseDocument>): Mapping {
