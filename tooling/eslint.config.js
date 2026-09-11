@@ -1,15 +1,18 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'eslint/config'
-import eslintConfigXo from 'eslint-config-xo'
-import sonarjs from 'eslint-plugin-sonarjs'
 import boundaries from 'eslint-plugin-boundaries'
+import sonarjs from 'eslint-plugin-sonarjs'
+import eslintConfigXo from 'eslint-config-xo'
 import globals from 'globals'
+
+const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 
 export default defineConfig([
   ...eslintConfigXo({
     space: true,
     semicolon: false,
     prettier: 'compat',
-    gitignore: import.meta.url
+    gitignore: new URL('../.gitignore', import.meta.url).href
   }),
 
   {
@@ -25,7 +28,7 @@ export default defineConfig([
     },
     settings: {
       'import-x/resolver': {
-        typescript: true
+        typescript: { project: 'tooling/tsconfig.json' }
       },
       'boundaries/files': [
         { pattern: 'index.ts', category: 'entry' },
@@ -79,6 +82,22 @@ export default defineConfig([
           ]
         }
       ]
+    }
+  },
+
+  {
+    files: ['**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        project: './tooling/tsconfig.json',
+        projectService: false,
+        tsconfigRootDir: repositoryRoot
+      }
+    },
+    settings: {
+      n: {
+        tsconfigPath: 'tooling/tsconfig.json'
+      }
     }
   },
 

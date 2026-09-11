@@ -9,7 +9,7 @@ import process from 'node:process'
 import { createInterface } from 'node:readline'
 import { test } from 'node:test'
 
-const repository = path.resolve(import.meta.dirname, '..')
+const repository = path.resolve(import.meta.dirname, '../..')
 const password = 'learning-plugin-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
 

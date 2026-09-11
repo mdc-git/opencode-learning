@@ -141,20 +141,18 @@ function indexAfterCursor(messages: readonly unknown[], cursor?: string): number
   return found === -1 ? 0 : found + 1
 }
 
-function lookbackStart(messages: readonly unknown[], fresh: number, turns: number): number {
-  let remaining = turns
-  for (let index = fresh - 1; index >= 0; index -= 1) {
-    if (messageRecord(messages[index])?.type !== 'user') {
-      continue
-    }
+function userMessageIndexes(messages: readonly unknown[], end: number): number[] {
+  return messages
+    .slice(0, end)
+    .flatMap((message, index) => (messageRecord(message)?.type === 'user' ? [index] : []))
+}
 
-    remaining -= 1
-    if (remaining === 0) {
-      return index
-    }
+function lookbackStart(messages: readonly unknown[], fresh: number, turns: number): number {
+  if (turns <= 0) {
+    return 0
   }
 
-  return 0
+  return userMessageIndexes(messages, fresh).at(-turns) ?? 0
 }
 
 export function captureEvidence(
