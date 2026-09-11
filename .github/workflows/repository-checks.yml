@@ -1,31 +1,164 @@
-name: Bootstrap Bun lockfile
+name: Repository checks
 
 on:
   push:
-    branches: [automation/repository-checks-bun]
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  vulnerability-alerts: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lockfile:
+  checks:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
 
-      - name: Generate and commit lockfile
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install OpenCode V2
+        run: bun add --global @opencode/cli@beta
+
+      - name: Check OpenCode dependency channel
+        id: opencode
+        continue-on-error: true
         run: |
-          if [ -f bun.lock ]; then
+          node -e "
+          const pkg = require('./package.json')
+          if (pkg.dependencies?.['@opencode/plugin'] !== 'beta') {
+            throw new Error('@opencode/plugin must remain exactly beta')
+          }
+          "
+
+      - name: Check formatting
+        id: format
+        continue-on-error: true
+        run: bun run prettier . --check --config tooling/prettier.json --ignore-path tooling/prettierignore
+
+      - name: Lint
+        id: lint
+        continue-on-error: true
+        run: bun run eslint . --config tooling/eslint.config.js
+
+      - name: Typecheck
+        id: typecheck
+        continue-on-error: true
+        run: bun run tsc --project tooling/tsconfig.json --noEmit
+
+      - name: Test
+        id: test
+        continue-on-error: true
+        run: node --test tooling/test/local-plugin.test.mjs
+
+      - name: Check dependency architecture
+        id: deps
+        continue-on-error: true
+        run: bun run depcruise --config tooling/dependency-cruiser.mjs index.ts plugins/opencode-learning
+
+      - name: Check unused code and dependencies
+        id: knip
+        continue-on-error: true
+        run: bun run knip --config tooling/knip.json --tsConfig tooling/tsconfig.json
+
+      - name: Audit dependencies
+        id: audit
+        continue-on-error: true
+        run: bun audit
+
+      - name: Check package contents
+        id: pack
+        continue-on-error: true
+        run: bun pm pack --dry-run
+
+      - name: Scan dependency updates
+        id: updates
+        continue-on-error: true
+        run: |
+          output="$(node tooling/update-direct-deps.mjs)"
+          printf '%s\n' "$output"
+
+          {
+            echo "## Dependency updates"
+            echo
+            echo '```text'
+            printf '%s\n' "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if printf '%s\n' "$output" |
+            grep -Eq '^(dependencies|devDependencies): '
+          then
+            echo "::warning title=Dependency updates available::See the workflow summary."
+          fi
+
+      - name: Check Dependabot alerts
+        id: dependabot
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          alerts="$(
+            gh api \
+              --paginate \
+              --slurp \
+              "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100"
+          )"
+
+          count="$(printf '%s\n' "$alerts" | jq 'add | length')"
+
+          if [ "$count" -eq 0 ]; then
             exit 0
           fi
 
-          bun install --lockfile-only
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add bun.lock
-          git commit -m "chore: add Bun lockfile"
-          git push
+          printf '%s\n' "$alerts" |
+            jq -r 'add[] |
+              "::error title=Dependabot vulnerability::\(.dependency.package.name): \(.security_advisory.severity) - \(.security_advisory.summary)"'
+
+          exit 1
+
+      - name: Fail if any check failed
+        if: always()
+        run: |
+          failed=0
+
+          check() {
+            name="$1"
+            outcome="$2"
+            printf '%-32s %s\n' "$name" "$outcome"
+
+            if [ "$outcome" != "success" ]; then
+              echo "::error title=Check failed::$name: $outcome"
+              failed=1
+            fi
+          }
+
+          check "OpenCode dependency channel" "${{ steps.opencode.outcome }}"
+          check "Formatting" "${{ steps.format.outcome }}"
+          check "Lint" "${{ steps.lint.outcome }}"
+          check "Typecheck" "${{ steps.typecheck.outcome }}"
+          check "Test" "${{ steps.test.outcome }}"
+          check "Dependency architecture" "${{ steps.deps.outcome }}"
+          check "Unused code/dependencies" "${{ steps.knip.outcome }}"
+          check "Bun audit" "${{ steps.audit.outcome }}"
+          check "Package contents" "${{ steps.pack.outcome }}"
+          check "Dependency update scan" "${{ steps.updates.outcome }}"
+          check "Dependabot alerts" "${{ steps.dependabot.outcome }}"
+
+          exit "$failed"
