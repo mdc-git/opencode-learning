@@ -25,9 +25,6 @@ const configuration = {
   options: {
     doNotFollow: { path: 'node_modules' },
     tsPreCompilationDeps: true,
-    tsConfig: {
-      fileName: 'tooling/tsconfig.json'
-    },
     enhancedResolveOptions: {
       exportsFields: ['exports'],
       conditionNames: ['node', 'import', 'require', 'default']
