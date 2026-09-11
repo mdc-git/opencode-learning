@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline'
 import { test } from 'node:test'
 
 const repository = path.resolve(import.meta.dirname, '../..')
+const localPlugin = path.join(repository, '.opencode')
 const password = 'learning-plugin-test-password'
 const authorization = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
 
@@ -122,7 +123,7 @@ async function snapshot(base, project) {
     api(base, `/api/command${locationQuery(project)}`)
   ])
   return {
-    plugin: plugins.data.find((item) => item.id === 'github.learning_skills'),
+    plugin: plugins.data.find((item) => item.id === 'local.learning_skills'),
     learningCommands: commands.data
       .map((item) => item.name)
       .filter((name) => name.startsWith('learn'))
@@ -142,7 +143,7 @@ function waitForPlugin(base, project, diagnostics) {
       finish(timer, interval, () =>
         reject(
           new Error(
-            `learning plugin did not activate\nstate=${JSON.stringify(lastSnapshot, null, 2)}\nstderr=${diagnostics()}`
+            `local learning plugin did not activate\nstate=${JSON.stringify(lastSnapshot, null, 2)}\nstderr=${diagnostics()}`
           )
         )
       )
@@ -170,7 +171,7 @@ async function exercisePlugin(root, project) {
   await mkdir(path.join(root, 'tmp'), { recursive: true })
   await writeFile(
     path.join(project, 'opencode.jsonc'),
-    `${JSON.stringify({ plugins: [repository] })}\n`
+    `${JSON.stringify({ plugins: [localPlugin] })}\n`
   )
   const running = startServer(project, root)
   try {
@@ -181,6 +182,7 @@ async function exercisePlugin(root, project) {
     })
     const current = await waitForPlugin(base, project, running.diagnostics)
     assert.equal(current.plugin.source.type, 'local')
+    assert.equal(current.plugin.source.path, path.join(localPlugin, 'index.ts'))
     assert.deepEqual(current.learningCommands, [])
     return current.plugin.id
   } finally {
@@ -188,11 +190,11 @@ async function exercisePlugin(root, project) {
   }
 }
 
-test('package-root server plugin activates without exposing learning commands as session commands', async () => {
+test('checkout-local server plugin activates from .opencode', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   const project = path.join(root, 'project')
   try {
-    assert.equal(await exercisePlugin(root, project), 'github.learning_skills')
+    assert.equal(await exercisePlugin(root, project), 'local.learning_skills')
   } finally {
     await rm(root, { recursive: true, force: true })
   }

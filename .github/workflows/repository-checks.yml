@@ -70,7 +70,7 @@ jobs:
       - name: Check dependency architecture
         id: deps
         continue-on-error: true
-        run: bun run depcruise --config tooling/dependency-cruiser.mjs index.ts plugins/opencode-learning
+        run: bun run depcruise --config tooling/dependency-cruiser.mjs plugins/opencode-learning
 
       - name: Check unused code and dependencies
         id: knip

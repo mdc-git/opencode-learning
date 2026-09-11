@@ -2,7 +2,7 @@
 
 `opencode-learning` is an Effect-native OpenCode V2 plugin that extracts one reusable procedural skill from root-session activity and stages every learned change for explicit approval.
 
-The plugin ID is `github.learning_skills`. The package root exports the server plugin and `./tui` exports the terminal integration.
+The deployed server plugin ID is `github.learning_skills`. The package root exports `plugins/opencode-learning/index.ts`, and `./tui` exports `plugins/opencode-learning/tui.ts`.
 
 ## Installation
 
@@ -19,7 +19,7 @@ OpenCode loads the package's `./tui` entrypoint for the connected terminal, so t
 
 ## Local development
 
-The repository root is the local plugin entrypoint. `.opencode/opencode.jsonc` disables the configured GitHub copy and loads the repository root:
+The checkout uses the same local-directory pattern as `opencode-repl-tools`. `.opencode/opencode.jsonc` disables the deployed GitHub copy and loads the `.opencode` directory itself:
 
 ```jsonc
 {
@@ -28,7 +28,9 @@ The repository root is the local plugin entrypoint. `.opencode/opencode.jsonc` d
 }
 ```
 
-Run OpenCode from the repository root after installing dependencies. The active server plugin keeps the canonical `github.learning_skills` ID regardless of source.
+`.opencode/index.ts` imports the checkout server implementation and changes its ID to `local.learning_skills`. `.opencode/tui.ts` imports the checkout TUI implementation and changes its ID to `local.learning_skills.tui`, so local server and terminal code always come from the same checkout.
+
+Run OpenCode from the repository root after installing dependencies.
 
 ## Learning loop
 
@@ -129,6 +131,6 @@ bun run check
 bun run fix
 ```
 
-`bun run check` scans compatible direct dependency updates, checks formatting, lint, types, the isolated OpenCode activation test, dependency architecture, unused code and dependencies, vulnerabilities, and package contents without stopping at the first failure. `bun run fix` applies compatible direct dependency updates and available automatic cleanup, then reruns the complete check chain against the resulting repository state.
+`bun run check` scans compatible direct dependency updates, checks formatting, lint, types, the isolated checkout-local OpenCode activation test, dependency architecture, unused code and dependencies, vulnerabilities, and package contents without stopping at the first failure. `bun run fix` applies compatible direct dependency updates and available automatic cleanup, then reruns the complete check chain against the resulting repository state.
 
 The integration test launches and terminates its own isolated private `opencode2 serve --stdio --port 0` child process. It does not stop or restart the user's OpenCode service.

@@ -3,12 +3,8 @@ node_modules/
 package-lock.json
 !.opencode/
 .opencode/*
-!.opencode/cli.json
 !.opencode/opencode.jsonc
 !.opencode/index.ts
+!.opencode/tui.ts
 !.opencode/commands/
 !.opencode/commands/deploy.md
-!.opencode/plugins/
-!.opencode/plugins/learning/
-!.opencode/plugins/learning/index.ts
-!.opencode/plugins/learning/tui.tsx
