@@ -34,7 +34,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install OpenCode V2
-        run: bun add --global @opencode/cli@beta
+        run: bun add --global --trust @opencode/cli@beta
 
       - name: Check OpenCode dependency channel
         id: opencode
