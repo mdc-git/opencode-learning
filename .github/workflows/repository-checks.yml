@@ -1,11 +1,11 @@
-name: Generate Bun lockfile
+name: Bootstrap Bun lockfile
 
 on:
   push:
     branches: [automation/repository-checks-bun]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   lockfile:
@@ -17,12 +17,15 @@ jobs:
         with:
           bun-version: 1.4.2
 
-      - name: Generate lockfile
-        run: bun install --lockfile-only
+      - name: Generate and commit lockfile
+        run: |
+          if [ -f bun.lock ]; then
+            exit 0
+          fi
 
-      - name: Upload lockfile
-        uses: actions/upload-artifact@v4
-        with:
-          name: bun-lock
-          path: bun.lock
-          if-no-files-found: error
+          bun install --lockfile-only
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add bun.lock
+          git commit -m "chore: add Bun lockfile"
+          git push
