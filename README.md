@@ -121,19 +121,14 @@ Promotion validates the plugin-owned project source, replaces the exact global s
 
 ## Verification
 
-Run the repository verification chain with fresh output:
+The repository uses Bun for package management and commits `bun.lock`. Development-only configuration and tests live under `tooling/`.
 
 ```sh
-npm install
-npm run format
-npm run format:check
-npm run lint
-npm run typecheck
-npm run test
-npm run check:deps
-npm run check:knip
-npm run audit
-npm pack --dry-run
+bun install --frozen-lockfile
+bun run check
+bun run fix
 ```
+
+`bun run check` scans compatible direct dependency updates, checks formatting, lint, types, the isolated OpenCode activation test, dependency architecture, unused code and dependencies, vulnerabilities, and package contents without stopping at the first failure. `bun run fix` applies compatible direct dependency updates and available automatic cleanup, then reruns the complete check chain against the resulting repository state.
 
 The integration test launches and terminates its own isolated private `opencode2 serve --stdio --port 0` child process. It does not stop or restart the user's OpenCode service.
