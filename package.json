@@ -13,14 +13,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "audit": "npm audit",
-    "check:deps": "depcruise --config .dependency-cruiser.mjs index.ts plugins/opencode-learning",
-    "check:knip": "knip",
-    "format": "prettier . --write",
-    "format:check": "prettier . --check",
-    "lint": "eslint .",
-    "test": "node --test test/local-plugin.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "check": "failed=0; node tooling/update-direct-deps.mjs || failed=1; prettier . --check --config tooling/prettier.json --ignore-path tooling/prettierignore || failed=1; eslint . --config tooling/eslint.config.js || failed=1; tsc --project tooling/tsconfig.json --noEmit || failed=1; node --test tooling/test/local-plugin.test.mjs || failed=1; depcruise --config tooling/dependency-cruiser.mjs index.ts plugins/opencode-learning || failed=1; knip --config tooling/knip.json --tsConfig tooling/tsconfig.json || failed=1; bun audit || failed=1; bun pm pack --dry-run || failed=1; exit \"$failed\"",
+    "fix": "failed=0; node tooling/update-direct-deps.mjs --apply || failed=1; bun install || failed=1; bun audit fix || failed=1; knip --config tooling/knip.json --tsConfig tooling/tsconfig.json --fix || failed=1; prettier . --write --config tooling/prettier.json --ignore-path tooling/prettierignore || failed=1; eslint . --config tooling/eslint.config.js --fix || failed=1; bun install || failed=1; bun run check || failed=1; exit \"$failed\""
   },
   "files": [
     "index.ts",

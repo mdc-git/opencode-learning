@@ -4,137 +4,161 @@ on:
   push:
     branches: [master]
   pull_request:
+  schedule:
+    - cron: '17 4 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  vulnerability-alerts: read
+
+concurrency:
+  group: repository-checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
       - name: Install dependencies
-        run: npm install
+        run: bun install --frozen-lockfile
 
       - name: Install OpenCode V2
-        run: npm install --global @opencode/cli@beta
+        run: bun add --global --trust @opencode/cli@beta
 
-      - name: Fix dependency vulnerabilities
-        if: github.event_name != 'pull_request'
+      - name: Check OpenCode dependency channel
+        id: opencode
         continue-on-error: true
-        run: npm audit fix
-
-      - name: Fix unused code and dependencies
-        if: github.event_name != 'pull_request'
-        continue-on-error: true
-        run: npx knip --fix
-
-      - name: Fix lint findings
-        if: github.event_name != 'pull_request'
-        continue-on-error: true
-        run: npx eslint . --fix
-
-      - name: Format repository
-        if: github.event_name != 'pull_request'
-        continue-on-error: true
-        run: npm run format
-
-      - name: Commit automatic fixes
-        if: github.event_name != 'pull_request'
         run: |
-          if git diff --quiet -- .; then
-            exit 0
-          fi
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -u
-          git commit -m "style: apply automatic repository fixes"
-          git push
-
-      - name: Refresh dependencies after fixes
-        if: github.event_name != 'pull_request'
-        run: npm install
+          node -e "
+          const pkg = require('./package.json')
+          if (pkg.dependencies?.['@opencode/plugin'] !== 'beta') {
+            throw new Error('@opencode/plugin must remain exactly beta')
+          }
+          "
 
       - name: Check formatting
         id: format
         continue-on-error: true
-        run: npm run format:check
+        run: bun run prettier . --check --config tooling/prettier.json --ignore-path tooling/prettierignore
 
       - name: Lint
         id: lint
         continue-on-error: true
-        run: npm run lint
+        run: bun run eslint . --config tooling/eslint.config.js
 
       - name: Typecheck
         id: typecheck
         continue-on-error: true
-        run: npm run typecheck
+        run: bun run tsc --project tooling/tsconfig.json --noEmit
 
       - name: Test
         id: test
         continue-on-error: true
-        run: npm run test
+        run: node --test tooling/test/local-plugin.test.mjs
 
       - name: Check dependency architecture
         id: deps
         continue-on-error: true
-        run: npm run check:deps
+        run: bun run depcruise --config tooling/dependency-cruiser.mjs index.ts plugins/opencode-learning
 
       - name: Check unused code and dependencies
         id: knip
         continue-on-error: true
-        run: npm run check:knip
+        run: bun run knip --config tooling/knip.json --tsConfig tooling/tsconfig.json
 
       - name: Audit dependencies
         id: audit
         continue-on-error: true
-        run: npm run audit
+        run: bun audit
 
-      - name: Pack package
+      - name: Check package contents
         id: pack
         continue-on-error: true
-        run: npm pack --dry-run
+        run: bun pm pack --dry-run
 
-      - name: Fail if any validation gate failed
-        if: always()
-        env:
-          FORMAT_OUTCOME: ${{ steps.format.outcome }}
-          LINT_OUTCOME: ${{ steps.lint.outcome }}
-          TYPECHECK_OUTCOME: ${{ steps.typecheck.outcome }}
-          TEST_OUTCOME: ${{ steps.test.outcome }}
-          DEPS_OUTCOME: ${{ steps.deps.outcome }}
-          KNIP_OUTCOME: ${{ steps.knip.outcome }}
-          AUDIT_OUTCOME: ${{ steps.audit.outcome }}
-          PACK_OUTCOME: ${{ steps.pack.outcome }}
+      - name: Scan dependency updates
+        id: updates
+        continue-on-error: true
         run: |
-          printf '%s\n' \
-            "format=$FORMAT_OUTCOME" \
-            "lint=$LINT_OUTCOME" \
-            "typecheck=$TYPECHECK_OUTCOME" \
-            "test=$TEST_OUTCOME" \
-            "deps=$DEPS_OUTCOME" \
-            "knip=$KNIP_OUTCOME" \
-            "audit=$AUDIT_OUTCOME" \
-            "pack=$PACK_OUTCOME"
-          for outcome in \
-            "$FORMAT_OUTCOME" \
-            "$LINT_OUTCOME" \
-            "$TYPECHECK_OUTCOME" \
-            "$TEST_OUTCOME" \
-            "$DEPS_OUTCOME" \
-            "$KNIP_OUTCOME" \
-            "$AUDIT_OUTCOME" \
-            "$PACK_OUTCOME"
-          do
+          output="$(node tooling/update-direct-deps.mjs)"
+          printf '%s\n' "$output"
+
+          {
+            echo "## Dependency updates"
+            echo
+            echo '```text'
+            printf '%s\n' "$output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if printf '%s\n' "$output" |
+            grep -Eq '^(dependencies|devDependencies): '
+          then
+            echo "::warning title=Dependency updates available::See the workflow summary."
+          fi
+
+      - name: Check Dependabot alerts
+        id: dependabot
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          alerts="$(
+            gh api \
+              --paginate \
+              --slurp \
+              "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=100"
+          )"
+
+          count="$(printf '%s\n' "$alerts" | jq 'add | length')"
+
+          if [ "$count" -eq 0 ]; then
+            exit 0
+          fi
+
+          printf '%s\n' "$alerts" |
+            jq -r 'add[] |
+              "::error title=Dependabot vulnerability::\(.dependency.package.name): \(.security_advisory.severity) - \(.security_advisory.summary)"'
+
+          exit 1
+
+      - name: Fail if any check failed
+        if: always()
+        run: |
+          failed=0
+
+          check() {
+            name="$1"
+            outcome="$2"
+            printf '%-32s %s\n' "$name" "$outcome"
+
             if [ "$outcome" != "success" ]; then
-              exit 1
+              echo "::error title=Check failed::$name: $outcome"
+              failed=1
             fi
-          done
+          }
+
+          check "OpenCode dependency channel" "${{ steps.opencode.outcome }}"
+          check "Formatting" "${{ steps.format.outcome }}"
+          check "Lint" "${{ steps.lint.outcome }}"
+          check "Typecheck" "${{ steps.typecheck.outcome }}"
+          check "Test" "${{ steps.test.outcome }}"
+          check "Dependency architecture" "${{ steps.deps.outcome }}"
+          check "Unused code/dependencies" "${{ steps.knip.outcome }}"
+          check "Bun audit" "${{ steps.audit.outcome }}"
+          check "Package contents" "${{ steps.pack.outcome }}"
+          check "Dependency update scan" "${{ steps.updates.outcome }}"
+          check "Dependabot alerts" "${{ steps.dependabot.outcome }}"
+
+          exit "$failed"
