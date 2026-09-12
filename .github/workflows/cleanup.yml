@@ -35,23 +35,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_NAME: ${{ github.event.repository.name }}
         run: |
-          packages="$(
-            gh api \
-              --paginate \
-              "users/${GITHUB_REPOSITORY_OWNER}/packages?package_type=container&per_page=100"
-          )"
+          versions_file="${RUNNER_TEMP}/container-versions.json"
+          error_file="${RUNNER_TEMP}/container-versions.error"
 
-          if ! printf '%s\n' "$packages" |
-            jq -e --arg package "$PACKAGE_NAME" '.[] | select(.name == $package)' >/dev/null
+          if ! gh api \
+            --paginate \
+            --slurp \
+            "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/versions?per_page=100" \
+            >"$versions_file" 2>"$error_file"
           then
-            echo "No container package named $PACKAGE_NAME."
-            exit 0
+            if grep -q 'HTTP 404' "$error_file"; then
+              echo "No container package named $PACKAGE_NAME."
+              exit 0
+            fi
+
+            cat "$error_file" >&2
+            exit 1
           fi
 
-          gh api \
-            --paginate \
-            "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/versions?per_page=100" |
-            jq -r '.[] | select((.metadata.container.tags // []) | length == 0) | .id' |
+          jq -r \
+            'add[] | select((.metadata.container.tags // []) | length == 0) | .id' \
+            "$versions_file" |
             while read -r version_id; do
               gh api --method DELETE \
                 "users/${GITHUB_REPOSITORY_OWNER}/packages/container/${PACKAGE_NAME}/versions/${version_id}"
