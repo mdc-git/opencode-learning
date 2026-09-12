@@ -184,16 +184,14 @@ async function promote(context: Context, rpc: LearningClient, input?: string): P
   })
 }
 
-function activityVariant(activity: LearningActivity): 'info' | 'success' | 'warning' {
-  if (activity.kind === 'proposal-staged') {
-    return 'success'
-  }
-
-  if (activity.kind === 'pending-limit' || activity.message.startsWith('rejected:')) {
-    return 'warning'
-  }
-
-  return 'info'
+function activityVariant(activity: LearningActivity): 'info' | 'success' | 'warning' | 'error' {
+  const variants: Partial<Record<LearningActivity['kind'], 'error' | 'success' | 'warning'>> = {
+    'review-failed': 'error',
+    'proposal-staged': 'success',
+    'pending-limit': 'warning',
+    'review-skipped': 'warning'
+  } as const
+  return variants[activity.kind] ?? (activity.message.startsWith('rejected:') ? 'warning' : 'info')
 }
 
 function activityToast(context: Context, activity: LearningActivity): void {

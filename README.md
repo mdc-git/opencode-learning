@@ -34,9 +34,13 @@ Run OpenCode from the repository root after installing dependencies.
 
 ## Learning loop
 
-Automatic review runs after every three successful primary root turns. Each automatic review includes those fresh turns plus up to two preceding turns as overlapping context. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
+Automatic review runs after every three successful primary root turns. It captures the session at the trigger and reviews a bounded chronological batch of fresh turns, with up to two preceding turns as overlapping context. A successful execution is a scheduling signal, not proof of task success. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
 
-Review evidence marks the boundary between overlapping context and fresh evidence. A create or patch must be materially supported by fresh evidence; context may complete or strengthen that support but cannot justify a proposal by itself. Packet bounding drops older overlapping context before candidate material and never drops fresh evidence.
+Review evidence marks the boundary between overlapping context and fresh evidence. A create or patch must be materially supported by fresh evidence; context may complete or strengthen that support but cannot justify a proposal by itself. Each batch contains complete turns. Later turns remain eligible for subsequent batches. An individually oversized turn is explicitly skipped with a terminal notice, allowing learning to continue.
+
+Evidence retains message and tool identifiers, tool inputs, diagnostic results, errors, shell commands, and exit codes. Assistant explanations are labelled as claims. Large tool payloads and assistant explanations carry explicit head/tail excerpts with truncation metadata; omitted content cannot support a learned instruction. Structured file paths authorize copies without implying knowledge of file contents. Input budgeting reserves space for validation of the proposal.
+
+The reviewer prioritizes explicit user corrections, observed failure → correction → verified result sequences, and non-obvious reusable successful workflows, in that order. One well-supported occurrence can justify a narrowly scoped lesson. Skills explain when to apply the procedure, what to do, and how to check the result, with evidence-supported exceptions where relevant.
 
 A review builds bounded evidence, selects up to five plugin-owned project skill candidates using explicit references and token overlap, and performs two transient model calls:
 
@@ -52,13 +56,13 @@ A review builds bounded evidence, selects up to five plugin-owned project skill 
   -> native skill reload
 ```
 
-The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the exact proposed artifact and the evidence used for review. A rejected or empty review consumes the fresh review interval; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
+The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the proposed skill text, generated file bodies, copied-file metadata, and the evidence used for review. Copied files are checked structurally; unseen file bodies are not semantically validated. A rejected or empty review consumes the reviewed fresh batch; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
 
-Manual `/learn` runs the same review pipeline synchronously over the current root session and treats the captured session evidence as fresh.
+Manual `/learn` runs the same review pipeline synchronously over the current root session. It starts with the captured session evidence as fresh; repeated invocations continue any deferred batch with up to two preceding turns as context. Once that captured backlog is consumed, a manual review starts from the session's beginning.
 
 ## Terminal interaction
 
-The TUI plugin owns all learning presentation. It subscribes to the server plugin's typed RPC activity event and shows native toasts for reviewer start/result, validator start/result, pending-limit notices, and newly staged proposals.
+The TUI plugin owns all learning presentation. It subscribes to the server plugin's typed RPC activity event and shows native toasts for reviewer start/result, validator start/result, pending-limit notices, skipped oversized turns, automatic review failures, and newly staged proposals.
 
 All learning commands require an open root session:
 
@@ -92,7 +96,7 @@ Learning state is project-wide filesystem state:
   tmp/<uuid>/
 ```
 
-Pending proposals are capped at 20 direct UUID-shaped directories on a best-effort basis across processes. Temporary review directories are owned by the active review that created them.
+Pending proposals are capped at 20 direct UUID-shaped directories, with at most one pending proposal per skill target. Reviewer and validator packets include pending targets and summaries for duplicate detection. Temporary review directories are owned by the active review that created them and cleaned up on failure.
 
 Global promotion targets `${XDG_CONFIG_HOME}/opencode/skills` when `XDG_CONFIG_HOME` is nonempty, otherwise `${HOME}/.config/opencode/skills`.
 
@@ -119,11 +123,15 @@ Patch proposals represent the complete desired skill directory. Their whole-tree
 
 Approval treats the staged `skill/` directory as authoritative, so regular files and executable bits may be edited before approval. The ownership marker must still be present. File replacements use temporary-file rename where appropriate; removed files are deleted last. The pending proposal is consumed only after project and staged post-checks confirm the intended revision.
 
+Staging, rejection, approval, and promotion acquire cross-process advisory locks on the relevant skill directories using Ubuntu's `flock` utility from `util-linux`. Project operations serialize within the project skill directory; promotion also locks the global skill directory. Approval checks the expected revision while holding the lock. Locks are released when the operation ends or its owning process exits. External editors do not participate in these advisory locks.
+
 Promotion validates the plugin-owned project source, replaces the exact global skill directory, copies the complete tree, verifies both source and destination revisions, and reloads native skills.
 
 ## Verification
 
 The repository uses Bun for package management and commits `bun.lock`. Development-only configuration and tests live under `tooling/`.
+
+Knip declares `flock` as an external system binary because it is supplied by Ubuntu's `util-linux`, rather than an npm dependency.
 
 ```sh
 bun install --frozen-lockfile

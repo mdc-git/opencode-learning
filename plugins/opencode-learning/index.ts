@@ -1,5 +1,6 @@
 import { Plugin } from '@opencode/plugin/effect'
-import { Effect, Fiber, Stream } from 'effect'
+import { Cause, Effect, Fiber, Stream } from 'effect'
+import { record } from './evidence-records.ts'
 import { runReview, type ReviewActivity, type ReviewResult } from './review.ts'
 import { registerLearningRpc } from './rpc-server.ts'
 import { createStore, PENDING_LIMIT, type Store } from './store.ts'
@@ -12,6 +13,7 @@ type SessionId = SessionRef['sessionID']
 type ReviewFiber = Fiber.Fiber<unknown, unknown>
 type SessionState = {
   reviewCursor?: string
+  manualCursor?: string
   successfulTurnsSinceReview: number
   pendingLimitNotified: boolean
   reviewFiber?: ReviewFiber
@@ -32,12 +34,6 @@ function stateFor(states: Map<SessionId, SessionState>, sessionId: SessionId): S
   const created = { successfulTurnsSinceReview: 0, pendingLimitNotified: false }
   states.set(sessionId, created)
   return created
-}
-
-function record(message: unknown): Record<string, unknown> | undefined {
-  return typeof message === 'object' && message !== null
-    ? (message as Record<string, unknown>)
-    : undefined
 }
 
 function cursorBeforeLatestUser(messages: readonly unknown[]): string | undefined {
@@ -71,14 +67,37 @@ function finishAutomatic(state: SessionState, result: ReviewResult) {
   return Effect.void
 }
 
-function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+function finishManual(state: SessionState, result: ReviewResult) {
+  if (result.kind === 'cap') {
+    return Effect.void
+  }
+
+  state.manualCursor = result.deferred > 0 ? result.endCursor : undefined
+  return result.deferred > 0 ? Effect.void : finishAutomatic(state, result)
+}
+
+function reviewFailure(runtime: Runtime, sessionRef: SessionRef, cause: Cause.Cause<unknown>) {
+  return runtime.activity({
+    kind: 'review-failed',
+    sessionId: sessionRef.sessionID,
+    message: `learning review failed: ${Cause.pretty(cause)}`
+  })
+}
+
+function automaticReview(
+  runtime: Runtime,
+  sessionRef: SessionRef,
+  state: SessionState,
+  messages: readonly unknown[]
+) {
   return runReview(runtime.ctx, runtime.store, sessionRef, {
     startAfter: state.reviewCursor,
     lookbackTurns: REVIEW_LOOKBACK_TURNS,
+    messages,
     activity: runtime.activity
   }).pipe(
     Effect.flatMap((result) => finishAutomatic(state, result)),
-    Effect.catch(() => Effect.void),
+    Effect.catchCause((cause) => reviewFailure(runtime, sessionRef, cause)),
     Effect.ensuring(
       Effect.sync(() => {
         state.reviewFiber = undefined
@@ -87,7 +106,12 @@ function automaticReview(runtime: Runtime, sessionRef: SessionRef, state: Sessio
   )
 }
 
-function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: SessionState) {
+function startAutomatic(
+  runtime: Runtime,
+  sessionRef: SessionRef,
+  state: SessionState,
+  messages: readonly unknown[]
+) {
   return Effect.gen(function* () {
     state.successfulTurnsSinceReview = 0
     const pending = yield* Effect.promise(async () => runtime.store.pendingCount()).pipe(
@@ -102,7 +126,9 @@ function startAutomatic(runtime: Runtime, sessionRef: SessionRef, state: Session
       return
     }
 
-    state.reviewFiber = yield* Effect.forkDetach(automaticReview(runtime, sessionRef, state))
+    state.reviewFiber = yield* Effect.forkDetach(
+      automaticReview(runtime, sessionRef, state, messages)
+    )
   })
 }
 
@@ -129,10 +155,10 @@ function primarySuccess(runtime: Runtime, sessionRef: SessionRef) {
       state.successfulTurnsSinceReview += 1
       const isDue = state.successfulTurnsSinceReview >= SUCCESSFUL_TURNS_PER_REVIEW
       return isDue && state.reviewFiber === undefined
-        ? startAutomatic(runtime, sessionRef, state)
+        ? startAutomatic(runtime, sessionRef, state, messages)
         : Effect.void
     }),
-    Effect.catchCause(() => Effect.void)
+    Effect.catchCause((cause) => reviewFailure(runtime, sessionRef, cause))
   )
 }
 
@@ -174,13 +200,15 @@ function manualReview(
 ): Effect.Effect<ReviewResult, unknown> {
   const state = stateFor(runtime.states, sessionRef.sessionID)
   if (state.reviewFiber !== undefined) {
-    return Effect.succeed({ kind: 'rejected', reason: 'review already in progress' })
+    return Effect.succeed({ kind: 'rejected', reason: 'review already in progress', deferred: 0 })
   }
 
   return Effect.gen(function* () {
     state.pendingLimitNotified = false
     state.successfulTurnsSinceReview = 0
     const review = runReview(runtime.ctx, runtime.store, sessionRef, {
+      startAfter: state.manualCursor,
+      lookbackTurns: REVIEW_LOOKBACK_TURNS,
       activity: runtime.activity
     }).pipe(
       Effect.ensuring(
@@ -192,9 +220,7 @@ function manualReview(
     const fiber = yield* Effect.forkDetach(review)
     state.reviewFiber = fiber
     const result = yield* Fiber.join(fiber)
-    if (result.endCursor !== undefined) {
-      state.reviewCursor = result.endCursor
-    }
+    yield* finishManual(state, result)
 
     return result
   })

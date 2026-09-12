@@ -3,18 +3,12 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Plugin } from '@opencode/plugin/effect'
 import { Effect } from 'effect'
-import {
-  candidatePacket,
-  catalog,
-  ownedCandidates,
-  selectCandidates,
-  type Candidate
-} from './candidates.ts'
-import { boundPacket, captureEvidence, packetBytes, type Evidence } from './evidence.ts'
-import { isSkillId, type ProposalMetadata } from './proposal.ts'
+import { ownedCandidates, patchCandidate, type Candidate } from './candidates.ts'
+import { packetBytes, type Evidence } from './evidence.ts'
+import { isSkillId, type PendingProposal, type ProposalMetadata } from './proposal.ts'
 import { isolatedGenerate } from './review-generate.ts'
-import { proposalFor, validatorPacket } from './review-packet.ts'
-import { REFLECTOR, VALIDATOR } from './review-prompts.ts'
+import { reflectionCapture, proposalFor, validatorPacket } from './review-packet.ts'
+import { VALIDATOR } from './review-prompts.ts'
 import {
   decodeReflection,
   decodeValidation,
@@ -24,10 +18,7 @@ import {
 } from './review-schema.ts'
 import type { LearningActivity } from './rpc.ts'
 import { materializeSkill } from './skill-files.ts'
-import { scanSkillTree } from './skill-tree.ts'
 import { PENDING_LIMIT, type Store } from './store.ts'
-
-const encoder = new TextEncoder()
 
 type SessionRef = Parameters<Plugin.Context['session']['get']>[0]
 type ReflectionResult = {
@@ -35,6 +26,7 @@ type ReflectionResult = {
   evidence: Evidence
   candidates: Candidate[]
   all: Candidate[]
+  pending: PendingProposal[]
   model: string
   options: ReviewOptions
 }
@@ -42,6 +34,7 @@ export type ReviewActivity = (event: LearningActivity) => Effect.Effect<void, un
 export type ReviewOptions = {
   startAfter?: string
   lookbackTurns?: number
+  messages?: readonly unknown[]
   activity: ReviewActivity
 }
 type FinalizeInput = {
@@ -55,11 +48,12 @@ type FinalizeInput = {
   materialized: Awaited<ReturnType<typeof materializeSkill>>
 }
 
-export type ReviewResult =
-  | { kind: 'none'; reason: string; endCursor?: string }
-  | { kind: 'rejected'; reason: string; endCursor?: string }
-  | { kind: 'cap'; endCursor?: string }
-  | { kind: 'staged'; id: string; proposal: ProposalMetadata; endCursor?: string }
+export type ReviewResult = (
+  | { kind: 'none'; reason: string }
+  | { kind: 'rejected'; reason: string }
+  | { kind: 'cap' }
+  | { kind: 'staged'; id: string; proposal: ProposalMetadata }
+) & { endCursor?: string; deferred: number }
 
 function reviewerPrompt(instruction: string, packet: unknown): string {
   return `${instruction}\n\n${JSON.stringify(packet)}`
@@ -71,40 +65,6 @@ function activity(
   event: Omit<LearningActivity, 'sessionId'>
 ) {
   return options.activity({ ...event, sessionId: ref.sessionID })
-}
-
-function reflectionCapture(all: Candidate[], options: ReviewOptions) {
-  let evidence: Evidence = { records: [], omitted: 0, authorizedPaths: [], freshStart: 0 }
-  let candidates: Candidate[] = []
-  return {
-    prepare(messages: readonly unknown[], maxBytes: number): string {
-      const captured = captureEvidence(messages, options.startAfter, options.lookbackTurns)
-      const selected = selectCandidates(all, captured)
-      const overhead = encoder.encode(`${REFLECTOR}\n\n`).byteLength + 64
-      const bounded = boundPacket(captured, all, selected, Math.max(1, maxBytes - overhead))
-      evidence = bounded.evidence
-      candidates = bounded.candidates
-      return reviewerPrompt(REFLECTOR, {
-        evidence,
-        ownedSkills: catalog(all),
-        candidates: candidatePacket(candidates)
-      })
-    },
-    result: () => ({ evidence, candidates })
-  }
-}
-
-function patchCandidate(reflection: Reflection, candidates: Candidate[]): Candidate | undefined {
-  if (reflection.kind !== 'patch') {
-    return undefined
-  }
-
-  const candidate = candidates.find((item) => item.id === reflection.skillId)
-  if (candidate === undefined) {
-    throw new Error('patch target was not a full candidate')
-  }
-
-  return candidate
 }
 
 function reflect(
@@ -119,28 +79,28 @@ function reflect(
       message: 'learning reviewer started'
     })
     const all = yield* Effect.promise(async () => ownedCandidates(store))
-    const capture = reflectionCapture(all, options)
-    const generated = yield* isolatedGenerate(ctx, sessionRef, capture.prepare)
+    const pending = yield* Effect.promise(async () => store.listPending())
+    const capture = reflectionCapture(all, pending, options)
+    const generated = yield* isolatedGenerate(ctx, sessionRef, capture.prepare, options.messages)
     const { evidence, candidates } = capture.result()
-    const reflection = decodeReflection(generated.text)
+    if (evidence.skipped > 0) {
+      yield* activity(options, sessionRef, {
+        kind: 'review-skipped',
+        message: `excluded ${evidence.skipped} oversized learning turn(s) from this review`
+      })
+    }
+
+    const reflection: Reflection =
+      evidence.records.length === evidence.freshStart
+        ? { kind: 'none', reason: 'no reviewable fresh evidence' }
+        : decodeReflection(generated.text)
     yield* activity(options, sessionRef, {
       kind: 'reviewer-result',
       message:
         reflection.kind === 'none' ? reflection.reason : `${reflection.kind} ${reflection.skillId}`
     })
-    return { reflection, evidence, candidates, all, model: generated.model, options }
+    return { reflection, evidence, candidates, all, pending, model: generated.model, options }
   })
-}
-
-async function assertCandidateUnchanged(store: Store, candidate?: Candidate): Promise<void> {
-  if (candidate === undefined) {
-    return
-  }
-
-  const current = await scanSkillTree(path.join(store.projectSkills, candidate.id))
-  if (current.revision !== candidate.revision) {
-    throw new Error('patch target changed during review')
-  }
 }
 
 function validateMaterialized(input: FinalizeInput): Effect.Effect<Validation, unknown> {
@@ -178,6 +138,7 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
       return {
         kind: 'rejected',
         reason: validation.reason,
+        deferred: input.result.evidence.deferred,
         endCursor: input.result.evidence.endCursor
       }
     }
@@ -188,12 +149,18 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
         kind: 'pending-limit',
         message: 'pending proposal limit reached'
       })
-      return { kind: 'cap', endCursor: input.result.evidence.endCursor }
+      return {
+        kind: 'cap',
+        endCursor: input.result.evidence.endCursor,
+        deferred: input.result.evidence.deferred
+      }
     }
 
     const proposal = proposalFor(input.reflection, input.result.evidence, input.candidate)
     const { root } = input.materialized
-    yield* Effect.promise(async () => input.store.stage(proposal, root, input.id))
+    yield* Effect.promise(async () => input.store.stage(proposal, root, input.id)).pipe(
+      Effect.uninterruptible
+    )
     yield* activity(input.result.options, input.sessionRef, {
       kind: 'proposal-staged',
       message: `new ${proposal.kind} proposal for ${proposal.skillId}`
@@ -202,6 +169,7 @@ function finalizeProposal(input: FinalizeInput): Effect.Effect<ReviewResult, unk
       kind: 'staged',
       id: input.id,
       proposal,
+      deferred: input.result.evidence.deferred,
       endCursor: input.result.evidence.endCursor
     }
   })
@@ -242,6 +210,7 @@ function activeReflection(
     return Effect.succeed({
       kind: 'none',
       reason: reflection.reason,
+      deferred: result.evidence.deferred,
       endCursor: result.evidence.endCursor
     })
   }
@@ -251,27 +220,33 @@ function activeReflection(
       throw new Error('invalid reflected skill id')
     }
 
-    const candidate = patchCandidate(reflection, result.candidates)
+    const candidate = yield* Effect.promise(async () =>
+      patchCandidate(
+        store,
+        result.candidates,
+        reflection.kind === 'patch' ? reflection.skillId : undefined
+      )
+    )
     if (reflection.kind === 'create') {
       yield* Effect.promise(async () => store.assertCreateAvailable(reflection.skillId))
     }
 
-    yield* Effect.promise(async () => assertCandidateUnchanged(store, candidate))
-    const { id, materialized } = yield* materializeProposal(store, reflection, result, candidate)
-    const finalize = finalizeProposal({
-      ctx,
-      store,
-      sessionRef,
-      result,
-      reflection,
-      candidate,
-      id,
-      materialized
-    })
-    const cleanup = Effect.promise(async () =>
-      fs.rm(materialized.root, { recursive: true, force: true })
+    return yield* Effect.acquireUseRelease(
+      materializeProposal(store, reflection, result, candidate),
+      ({ id, materialized }) =>
+        finalizeProposal({
+          ctx,
+          store,
+          sessionRef,
+          result,
+          reflection,
+          candidate,
+          id,
+          materialized
+        }),
+      ({ materialized }) =>
+        Effect.promise(async () => fs.rm(materialized.root, { recursive: true, force: true }))
     )
-    return yield* finalize.pipe(Effect.ensuring(cleanup))
   })
 }
 
@@ -288,10 +263,17 @@ export function runReview(
         kind: 'pending-limit',
         message: 'pending proposal limit reached'
       })
-      return { kind: 'cap', endCursor: options.startAfter }
+      return { kind: 'cap', endCursor: options.startAfter, deferred: 0 }
     }
 
     const result = yield* reflect(ctx, store, sessionRef, options)
+    if (result.evidence.deferred > 0) {
+      yield* activity(options, sessionRef, {
+        kind: 'reviewer-result',
+        message: `${result.evidence.deferred} turn(s) remain for a subsequent learning batch`
+      })
+    }
+
     return yield* activeReflection(ctx, store, sessionRef, result)
   })
 }

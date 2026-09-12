@@ -112,6 +112,7 @@ async function writeSource(
     throw new Error('source must be a regular non-symlink file')
   }
 
+  safeChild(await fs.realpath(options.project), await fs.realpath(source))
   await fs.copyFile(source, target)
   await fs.chmod(target, isExecutable(stat.mode) ? 0o755 : 0o644)
 }
@@ -130,11 +131,21 @@ export async function materializeSkill(options: MaterializeOptions) {
   validateGenerated(options.skill)
   const root = path.join(options.temporary, options.id)
   const skillRoot = path.join(root, 'skill')
-  await fs.mkdir(skillRoot, { recursive: true })
-  await fs.writeFile(path.join(skillRoot, 'SKILL.md'), addOwnership(options.skill.skillMd))
-  await Promise.all(
-    options.skill.files.map(async (file) => writeProposedFile(options, skillRoot, file))
-  )
-  const scan = await validateSkillTree(skillRoot, true)
-  return { root, skillRoot, scan }
+  try {
+    await fs.mkdir(skillRoot, { recursive: true })
+    await fs.writeFile(path.join(skillRoot, 'SKILL.md'), addOwnership(options.skill.skillMd))
+    const written = await Promise.allSettled(
+      options.skill.files.map(async (file) => writeProposedFile(options, skillRoot, file))
+    )
+    const failed = written.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') {
+      throw new Error('supporting file materialization failed', { cause: failed.reason })
+    }
+
+    const scan = await validateSkillTree(skillRoot, true)
+    return { root, skillRoot, scan }
+  } catch (error) {
+    await fs.rm(root, { recursive: true, force: true })
+    throw error
+  }
 }

@@ -1,235 +1,196 @@
-import { candidatePacket, catalog, type Candidate } from './candidates.ts'
-
-const PATH_KEYS = new Set(['path', 'target', 'file'])
-const NESTED_KEYS = new Set(['metadata', 'relevantInput'])
-const encoder = new TextEncoder()
+import { Buffer } from 'node:buffer'
+import { candidatePacket, catalog, selectCandidates, type Candidate } from './candidates.ts'
+import { compactMessages, record } from './evidence-records.ts'
+import type { PendingProposal } from './proposal.ts'
 
 export type Evidence = {
   records: unknown[]
   omitted: number
   authorizedPaths: string[]
   freshStart: number
+  skipped: number
+  deferred: number
   endCursor?: string
 }
 
-function messageRecord(message: unknown): Record<string, unknown> | undefined {
-  return typeof message === 'object' && message !== null
-    ? (message as Record<string, unknown>)
-    : undefined
-}
-
-function compactText(part: Record<string, unknown>): unknown {
-  return { type: 'text', text: part.text }
-}
-
-function compactTool(part: Record<string, unknown>): unknown {
-  const state = messageRecord(part.state) ?? {}
-  return {
-    type: 'tool',
-    tool: part.name,
-    outcome: state.status,
-    relevantInput: state.input,
-    metadata: state.metadata
-  }
-}
-
-const PART_COMPACTERS: Record<string, (part: Record<string, unknown>) => unknown> = {
-  text: compactText,
-  tool: compactTool
-}
-
-function compactPart(part: unknown): unknown[] {
-  const item = messageRecord(part)
-  if (item === undefined || typeof item.type !== 'string') {
-    return []
-  }
-
-  const compacter = PART_COMPACTERS[item.type]
-  return compacter === undefined ? [] : [compacter(item)]
-}
-
-function compactAssistant(message: Record<string, unknown>): unknown {
-  const content = Array.isArray(message.content) ? message.content : []
-  return {
-    type: 'assistant',
-    content: content.flatMap((part) => compactPart(part))
-  }
-}
-
-function compactUser(item: Record<string, unknown>): unknown {
-  const text = typeof item.text === 'string' ? item.text : ''
-  return { type: 'user', text, files: item.files }
-}
-
-function compactShell(item: Record<string, unknown>): unknown {
-  return { type: 'shell', status: item.status, exit: item.exit }
-}
-
-const MESSAGE_COMPACTERS: Record<string, (message: Record<string, unknown>) => unknown> = {
-  user: compactUser,
-  assistant: compactAssistant,
-  shell: compactShell
-}
-
-function compactMessage(message: unknown): unknown | undefined {
-  const item = messageRecord(message)
-  if (item === undefined || typeof item.type !== 'string') {
-    return undefined
-  }
-
-  return MESSAGE_COMPACTERS[item.type]?.(item)
-}
-
-function compactMessages(messages: readonly unknown[]): unknown[] {
-  return messages.flatMap((message) => {
-    const compacted = compactMessage(message)
-    return compacted === undefined ? [] : [compacted]
-  })
-}
-
-function hasCollectedPath(key: string, item: unknown, output: Set<string>): boolean {
-  if (typeof item !== 'string' || !PATH_KEYS.has(key)) {
-    return false
-  }
-
-  output.add(item)
-  return true
-}
-
-function collectPathEntry(key: string, item: unknown, output: Set<string>): void {
-  if (item === undefined || hasCollectedPath(key, item, output)) {
-    return
-  }
-
-  if (NESTED_KEYS.has(key)) {
-    collectAuthorizedPaths(item, output)
-  }
-}
-
-function collectPathFields(value: Record<string, unknown>, output: Set<string>): void {
-  for (const [key, item] of Object.entries(value)) {
-    collectPathEntry(key, item, output)
-  }
-}
-
-function collectAuthorizedPaths(value: unknown, output: Set<string>): void {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectAuthorizedPaths(item, output)
-    }
-
-    return
-  }
-
-  const record = messageRecord(value)
-  if (record !== undefined) {
-    collectPathFields(record, output)
-  }
-}
+type ReviewCatalog = { all: Candidate[]; pending: PendingProposal[] }
+type EvidenceOptions = { startAfter?: string; lookbackTurns?: number }
+type Turn = { messages: readonly unknown[]; cursor?: string; complete: boolean }
+type FreshBatch = { evidence: Evidence; messages: unknown[] }
 
 function messageId(message: unknown): string | undefined {
-  const item = messageRecord(message)
-  return typeof item?.id === 'string' ? item.id : undefined
+  const id = record(message)?.id
+  return typeof id === 'string' ? id : undefined
 }
 
 function indexAfterCursor(messages: readonly unknown[], cursor?: string): number {
-  if (cursor === undefined) {
-    return 0
-  }
-
   const found = messages.findIndex((message) => messageId(message) === cursor)
-  return found === -1 ? 0 : found + 1
+  return cursor === undefined ? 0 : found + 1
 }
 
-function userMessageIndexes(messages: readonly unknown[], end: number): number[] {
-  return messages
-    .slice(0, end)
-    .flatMap((message, index) => (messageRecord(message)?.type === 'user' ? [index] : []))
+function userIndexes(messages: readonly unknown[]): number[] {
+  return messages.flatMap((message, index) => (record(message)?.type === 'user' ? [index] : []))
 }
 
-function lookbackStart(messages: readonly unknown[], fresh: number, turns: number): number {
-  if (turns <= 0) {
-    return 0
-  }
-
-  return userMessageIndexes(messages, fresh).at(-turns) ?? 0
+function turns(messages: readonly unknown[]): Turn[] {
+  const boundaries = [...new Set([0, ...userIndexes(messages), messages.length])]
+  return boundaries.slice(0, -1).map((start, index) => {
+    const batch = messages.slice(start, boundaries[index + 1])
+    return {
+      messages: batch,
+      cursor: messageId(batch.at(-1)),
+      complete: index < boundaries.length - 2 || isTurnComplete(batch)
+    }
+  })
 }
 
-export function captureEvidence(
-  messages: readonly unknown[],
-  startAfter?: string,
-  lookbackTurns = 0
-): Evidence {
-  const fresh = indexAfterCursor(messages, startAfter)
-  const start = startAfter === undefined ? fresh : lookbackStart(messages, fresh, lookbackTurns)
-  const contextRecords = compactMessages(messages.slice(start, fresh))
-  const freshRecords = compactMessages(messages.slice(fresh))
-  const records = [...contextRecords, ...freshRecords]
-  const authorized = new Set<string>()
-  for (const record of records) {
-    collectAuthorizedPaths(record, authorized)
-  }
-
-  return {
-    records,
-    omitted: 0,
-    authorizedPaths: [...authorized].toSorted((left, right) => left.localeCompare(right)),
-    freshStart: contextRecords.length,
-    endCursor: messageId(messages.slice(start).at(-1))
-  }
+function isTurnComplete(messages: readonly unknown[]): boolean {
+  const terminal = messages.findLast((message) =>
+    ['assistant', 'shell', 'user'].includes(String(record(message)?.type))
+  )
+  const item = record(terminal) ?? {}
+  return [
+    'stop',
+    'length',
+    'content-filter',
+    'error',
+    'unknown',
+    'exited',
+    'timeout',
+    'killed'
+  ].includes(String(item.finish ?? item.status))
 }
 
 export function packetBytes(value: unknown): number {
-  return encoder.encode(JSON.stringify(value)).byteLength
+  return Buffer.byteLength(JSON.stringify(value))
 }
 
-function boundedEvidence(evidence: Evidence, omitted: number): Evidence {
+export function pendingCatalog(pending: PendingProposal[]) {
+  return pending.map(({ skillId, kind, reason }) => ({ skillId, kind, reason }))
+}
+
+function packet(evidence: Evidence, skills: ReviewCatalog, candidates: Candidate[]) {
   return {
-    ...evidence,
-    records: evidence.records.slice(omitted),
-    omitted: evidence.omitted + omitted,
-    freshStart: evidence.freshStart - omitted
+    evidence,
+    ownedSkills: catalog(skills.all),
+    pendingSkills: pendingCatalog(skills.pending),
+    candidates: candidatePacket(candidates)
   }
 }
 
-function fitEvidence(
-  evidence: Evidence,
-  ownedSkills: unknown[],
-  candidates: Candidate[],
+function evidenceFor(context: readonly unknown[], fresh: readonly unknown[]): Evidence {
+  const overlap = compactMessages(context)
+  const captured = compactMessages(fresh)
+  return {
+    records: [...overlap.records, ...captured.records],
+    omitted: 0,
+    authorizedPaths: [...new Set([...overlap.authorizedPaths, ...captured.authorizedPaths])],
+    freshStart: overlap.records.length,
+    skipped: 0,
+    deferred: 0,
+    endCursor: messageId(fresh.at(-1))
+  }
+}
+
+function didAppendTurn(
+  batch: FreshBatch,
+  turn: Turn,
+  skills: ReviewCatalog,
   maxBytes: number
-): Evidence | undefined {
-  const omissions = Array.from({ length: evidence.freshStart + 1 }, (_, index) => index)
-  return omissions
-    .map((omitted) => boundedEvidence(evidence, omitted))
-    .find(
-      (bounded) =>
-        packetBytes({ evidence: bounded, ownedSkills, candidates: candidatePacket(candidates) }) <=
-        maxBytes
-    )
+): boolean {
+  if (!turn.complete) {
+    return false
+  }
+
+  const next = evidenceFor([], [...batch.messages, ...turn.messages])
+  next.skipped = batch.evidence.skipped
+  next.deferred = batch.evidence.deferred - 1
+  if (packetBytes(packet(next, skills, [])) <= maxBytes) {
+    batch.messages = [...batch.messages, ...turn.messages]
+    batch.evidence = next
+    return true
+  }
+
+  if (batch.messages.length > 0) {
+    return false
+  }
+
+  batch.evidence = {
+    ...batch.evidence,
+    skipped: batch.evidence.skipped + 1,
+    deferred: next.deferred,
+    endCursor: turn.cursor
+  }
+  return true
+}
+
+function freshBatch(
+  fresh: readonly unknown[],
+  skills: ReviewCatalog,
+  maxBytes: number
+): FreshBatch {
+  const batches = turns(fresh)
+  const batch = { evidence: evidenceFor([], []), messages: [] as unknown[] }
+  batch.evidence.deferred = batches.length
+  for (const turn of batches) {
+    if (!didAppendTurn(batch, turn, skills, maxBytes)) {
+      break
+    }
+  }
+
+  return batch
+}
+
+function fitContext(
+  context: readonly unknown[],
+  fresh: FreshBatch,
+  skills: ReviewCatalog,
+  maxBytes: number
+) {
+  const boundaries = [...new Set([0, ...userIndexes(context), context.length])]
+  for (const start of boundaries) {
+    const evidence = {
+      ...evidenceFor(context.slice(start), fresh.messages),
+      skipped: fresh.evidence.skipped,
+      deferred: fresh.evidence.deferred,
+      endCursor: fresh.evidence.endCursor,
+      omitted: compactMessages(context.slice(0, start)).records.length
+    }
+    const candidates = selectCandidates(skills.all, evidence)
+    if (packetBytes(packet(evidence, skills, candidates)) <= maxBytes) {
+      return { evidence, candidates }
+    }
+  }
+
+  const candidates = selectCandidates(skills.all, fresh.evidence)
+  while (packetBytes(packet(fresh.evidence, skills, candidates)) > maxBytes) {
+    candidates.pop()
+  }
+
+  return { evidence: fresh.evidence, candidates }
+}
+
+function contextStart(previous: readonly unknown[], lookback = 0): number {
+  return lookback > 0 ? (userIndexes(previous).at(-lookback) ?? 0) : previous.length
 }
 
 export function boundPacket(
-  evidence: Evidence,
-  all: Candidate[],
-  selected: Candidate[],
+  messages: readonly unknown[],
+  skills: ReviewCatalog,
+  options: EvidenceOptions,
   maxBytes: number
 ): { evidence: Evidence; candidates: Candidate[] } {
-  const ownedSkills = catalog(all)
-  if (packetBytes({ ownedSkills }) > maxBytes) {
-    throw new Error('owned skill catalog exceeds model input limit')
+  if (packetBytes(packet(evidenceFor([], []), skills, [])) > maxBytes) {
+    throw new Error('skill catalogs exceed model input limit')
   }
 
-  const counts = Array.from({ length: selected.length + 1 }, (_, index) => selected.length - index)
-  const match = counts
-    .map((count) => selected.slice(0, count))
-    .map((candidates) => ({
-      candidates,
-      evidence: fitEvidence(evidence, ownedSkills, candidates, maxBytes)
-    }))
-    .find((item) => item.evidence !== undefined)
-  if (match?.evidence === undefined) {
-    throw new Error('fresh review evidence exceeds model input limit')
+  const fresh = indexAfterCursor(messages, options.startAfter)
+  const previous = messages.slice(0, fresh)
+  const start = contextStart(previous, options.lookbackTurns)
+  const batch = freshBatch(messages.slice(fresh), skills, maxBytes)
+  if (batch.messages.length === 0) {
+    return { evidence: batch.evidence, candidates: [] }
   }
 
-  return { evidence: match.evidence, candidates: match.candidates }
+  return fitContext(messages.slice(start, fresh), batch, skills, maxBytes)
 }

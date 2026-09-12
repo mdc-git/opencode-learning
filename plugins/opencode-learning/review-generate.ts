@@ -29,34 +29,32 @@ function modelInputLimit(
 export function isolatedGenerate(
   ctx: Plugin.Context,
   sessionRef: SessionRef,
-  prepare: (messages: readonly unknown[], maxBytes: number) => string
+  prepare: (messages: readonly unknown[], maxBytes: number) => string,
+  captured?: readonly unknown[]
 ): Effect.Effect<GenerateResult, unknown> {
   return Effect.scoped(
     Effect.gen(function* () {
       const marker = `opencode-learning:${crypto.randomUUID()}`
       const models = yield* ctx.catalog.model.list()
+      const messages = captured ?? (yield* ctx.session.context(sessionRef))
       let capturedModel = ''
       const registration = yield* ctx.session.hook('context', (request) => {
         if (!JSON.stringify(request.messages).includes(marker)) {
           return Effect.void
         }
 
-        return ctx.session.context(sessionRef).pipe(
-          Effect.flatMap((messages) =>
-            Effect.sync(() => {
-              const maxBytes = modelInputLimit(models.data, request.model)
-              const prompt = prepare(messages, maxBytes)
-              capturedModel = modelKey(request.model)
-              request.system = []
-              request.tools = {}
-              request.messages = [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
-            })
-          ),
-          Effect.orDie
-        )
+        return Effect.sync(() => {
+          const maxBytes = modelInputLimit(models.data, request.model)
+          const prompt = prepare(messages, maxBytes)
+          capturedModel = modelKey(request.model)
+          request.system = []
+          request.tools = {}
+          request.messages = [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
+        })
       })
-      const generated = yield* ctx.session.generate({ ...sessionRef, prompt: marker })
-      yield* registration.dispose
+      const generated = yield* ctx.session
+        .generate({ ...sessionRef, prompt: marker })
+        .pipe(Effect.ensuring(registration.dispose))
       if (capturedModel === '') {
         return yield* Effect.fail(new Error('review context hook did not capture generation'))
       }

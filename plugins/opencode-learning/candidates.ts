@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import type { FileManifest } from './skill-tree.ts'
+import { scanSkillTree, type FileManifest } from './skill-tree.ts'
 import { hasOwnership, skillDescription } from './skill-markdown.ts'
 import type { Store } from './store.ts'
 
@@ -95,4 +95,22 @@ export function candidatePacket(candidates: Candidate[]) {
     revision: candidate.revision,
     files: candidate.manifest.filter((file) => file.path !== 'SKILL.md')
   }))
+}
+
+export async function patchCandidate(store: Store, candidates: Candidate[], skillId?: string) {
+  if (skillId === undefined) {
+    return undefined
+  }
+
+  const candidate = candidates.find((item) => item.id === skillId)
+  if (candidate === undefined) {
+    throw new Error('patch target was not a full candidate')
+  }
+
+  const current = await scanSkillTree(path.join(store.projectSkills, candidate.id))
+  if (current.revision !== candidate.revision) {
+    throw new Error('patch target changed during review')
+  }
+
+  return candidate
 }

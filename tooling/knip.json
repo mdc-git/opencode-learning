@@ -1,3 +1,4 @@
 {
-  "project": ["plugins/**/*.ts"]
+  "project": ["plugins/**/*.ts"],
+  "ignoreBinaries": ["flock"]
 }

@@ -9,6 +9,8 @@ const activityKindSchema = z.enum([
   'validator-started',
   'validator-result',
   'proposal-staged',
+  'review-failed',
+  'review-skipped',
   'pending-limit'
 ])
 

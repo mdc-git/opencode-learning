@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { withDirectoryLock } from './directory-lock.ts'
 import {
   decodeProposal,
   isProposalId,
@@ -171,6 +172,13 @@ async function stage(
     throw new Error('pending proposal limit reached')
   }
 
+  const pending = await listPending(paths)
+  if (pending.some((proposal) => proposal.skillId === metadata.skillId)) {
+    throw new Error('skill target already has a pending proposal')
+  }
+
+  await approvalTarget(paths, { ...metadata, id })
+
   const destination = safeChild(paths.pending, id)
   if (await isPresent(destination)) {
     throw new Error('proposal id collision')
@@ -267,16 +275,22 @@ export function createStore(project: string) {
     readPending: async (id: string) => readPending(paths, id),
     patchStatus: async (proposal: PendingProposal) => patchStatus(paths, proposal),
     stage: async (metadata: ProposalMetadata, temporaryRoot: string, id: string) =>
-      stage(paths, metadata, temporaryRoot, id),
+      withDirectoryLock(paths.projectSkills, async () => stage(paths, metadata, temporaryRoot, id)),
     async reject(id: string) {
       if (!isProposalId(id)) {
         throw new Error('proposal id must be an exact UUID')
       }
 
-      await fs.rm(safeChild(paths.pending, id), { recursive: true, force: true })
+      await withDirectoryLock(paths.projectSkills, async () =>
+        fs.rm(safeChild(paths.pending, id), { recursive: true, force: true })
+      )
     },
-    approve: async (id: string) => approve(paths, id),
-    promote: async (skillId: string) => promote(paths, skillId),
+    approve: async (id: string) =>
+      withDirectoryLock(paths.projectSkills, async () => approve(paths, id)),
+    promote: async (skillId: string) =>
+      withDirectoryLock(paths.projectSkills, async () =>
+        withDirectoryLock(paths.globalSkills, async () => promote(paths, skillId))
+      ),
     validateTree: validateSkillTree,
     assertCreateAvailable: async (skillId: string) => assertCreateAvailable(paths, skillId)
   }
