@@ -1,144 +1,159 @@
-# OpenCode procedural learning
+# OpenCode Learning
 
-`opencode-learning` is an Effect-native OpenCode V2 plugin that extracts one reusable procedural skill from root-session activity and stages every learned change for explicit approval.
+An OpenCode V2 plugin that turns useful patterns from your sessions into reusable
+project skills.
 
-The deployed server plugin ID is `github.learning_skills`. The package root exports `plugins/opencode-learning/index.ts`, and `./tui` exports `plugins/opencode-learning/tui.ts`.
+It reviews successful work, identifies reusable procedures, validates the
+proposal, and waits for explicit approval before adding anything to your project.
+
+## Features
+
+- Learns from normal OpenCode sessions
+- Reviews automatically after every three successful primary root turns
+- Supports manual review with `/learn`
+- Prioritizes explicit corrections, verified fixes, and reusable workflows
+- Stages every learned skill for approval before applying it
+- Lets you inspect, approve, reject, and promote learned skills
+- Stores learned skills as normal OpenCode skills
 
 ## Installation
 
-Configure the GitHub plugin in the OpenCode configuration used by the server:
+Add the plugin to your OpenCode configuration:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:mdc-git/opencode-learning"]
+  "plugins": [
+    {
+      "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git"
+    }
+  ]
 }
 ```
 
-OpenCode loads the package's `./tui` entrypoint for the connected terminal, so the server workflow and terminal presentation come from the same package.
+## Quick start
 
-## Local development
+Use OpenCode normally. The plugin periodically reviews successful root-session
+work and stages a proposal when it finds a reusable procedure.
 
-The checkout uses the same local-directory pattern as `opencode-repl-tools`. `.opencode/opencode.jsonc` disables the deployed GitHub copy and loads the `.opencode` directory itself:
+Nothing is applied automatically.
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["-github.learning_skills", "./"]
-}
-```
-
-`.opencode/index.ts` imports the checkout server implementation and changes its ID to `local.learning_skills`. `.opencode/tui.ts` imports the checkout TUI implementation and changes its ID to `local.learning_skills.tui`, so local server and terminal code always come from the same checkout.
-
-Run OpenCode from the repository root after installing dependencies.
-
-## Learning loop
-
-Automatic review runs after every three successful primary root turns. It captures the session at the trigger and reviews a bounded chronological batch of fresh turns, with up to two preceding turns as overlapping context. A successful execution is a scheduling signal, not proof of task success. The plugin keeps cadence state only in memory. Child sessions and transient reviewer generation do not count as primary turns.
-
-Review evidence marks the boundary between overlapping context and fresh evidence. A create or patch must be materially supported by fresh evidence; context may complete or strengthen that support but cannot justify a proposal by itself. Each batch contains complete turns. Later turns remain eligible for subsequent batches. An individually oversized turn is explicitly skipped with a terminal notice, allowing learning to continue.
-
-Evidence retains message and tool identifiers, tool inputs, diagnostic results, errors, shell commands, and exit codes. Assistant explanations are labelled as claims. Large tool payloads and assistant explanations carry explicit head/tail excerpts with truncation metadata; omitted content cannot support a learned instruction. Structured file paths authorize copies without implying knowledge of file contents. Input budgeting reserves space for validation of the proposal.
-
-The reviewer prioritizes explicit user corrections, observed failure → correction → verified result sequences, and non-obvious reusable successful workflows, in that order. One well-supported occurrence can justify a narrowly scoped lesson. Skills explain when to apply the procedure, what to do, and how to check the result, with evidence-supported exceptions where relevant.
-
-A review builds bounded evidence, selects up to five plugin-owned project skill candidates using explicit references and token overlap, and performs two transient model calls:
+To run a review immediately:
 
 ```text
-3 successful primary root turns
-  + up to 2 preceding turns of context
-  -> reviewer
-  -> deterministic materialization
-  -> validator
-  -> pending proposal
-  -> explicit /learn-approve
-  -> project skill
-  -> native skill reload
+/learn
 ```
 
-The reviewer and validator use the root session's selected model. Each transient generation uses the native `generate` hook to remove tools and ambient system context and supply the review packet. The validator receives the proposed skill text, generated file bodies, copied-file metadata, and the evidence used for review. Copied files are checked structurally; unseen file bodies are not semantically validated. A rejected or empty review consumes the reviewed fresh batch; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
+Inspect pending proposals:
 
-Manual `/learn` runs the same review pipeline synchronously over the current root session. It starts with the captured session evidence as fresh; repeated invocations continue any deferred batch with up to two preceding turns as context. Once that captured backlog is consumed, a manual review starts from the session's beginning.
+```text
+/learn-pending
+```
 
-## Terminal interaction
+Approve a proposal:
 
-The TUI plugin owns all learning presentation. It subscribes to the server plugin's typed RPC activity event and shows native toasts for reviewer start/result, validator start/result, pending-limit notices, skipped oversized turns, automatic review failures, and newly staged proposals.
+```text
+/learn-approve <id>
+```
 
-All learning commands require an open root session:
-
-- `/learn` — run a synchronous review of the current root session.
-- `/learn-pending [id]` — open the pending proposal selector or inspect one exact proposal UUID.
-- `/learn-approve <id>` — apply one exact pending proposal to the project skill tree and reload skills.
-- `/learn-reject <id>` — remove one exact pending proposal directory.
-- `/learn-promote <skill-id>` — replace the global copy of one plugin-owned project skill and reload skills.
-
-`/learn-pending` shows pending proposals as a selectable list. Selecting a proposal opens its metadata, stale status, file changes, manifest, evidence, and staged `SKILL.md` in a detail dialog.
-
-The terminal calls the server through the connected OpenCode client, so server-owned state and actions remain correct when the TUI and server run on different machines.
-
-## Filesystem state
-
-Project skills are ordinary OpenCode directory skills under:
+The approved skill is written to:
 
 ```text
 <project>/.opencode/skills/<skill-id>/
 ```
 
-Learning state is project-wide filesystem state:
+## How it works
 
 ```text
-<project>/.opencode/.learning/
-  pending/<uuid>/
-    proposal.json
-    skill/
-      SKILL.md
-      ...
-  tmp/<uuid>/
+session work
+  ↓
+review
+  ↓
+validation
+  ↓
+pending proposal
+  ↓
+explicit approval
+  ↓
+.opencode/skills/<skill-id>/
 ```
 
-Pending proposals are capped at 20 direct UUID-shaped directories, with at most one pending proposal per skill target. Reviewer and validator packets include pending targets and summaries for duplicate detection. Temporary review directories are owned by the active review that created them and cleaned up on failure.
+The reviewer looks for procedures that are useful beyond the immediate task,
+especially:
 
-Global promotion targets `${XDG_CONFIG_HOME}/opencode/skills` when `XDG_CONFIG_HOME` is nonempty, otherwise `${HOME}/.config/opencode/skills`.
+1. explicit user corrections;
+2. failures followed by a correction and verified result;
+3. non-obvious successful workflows worth reusing.
 
-## Learned skill contract
+A proposal must be supported by evidence from the session. Existing context can
+help explain that evidence, but it cannot justify a learned instruction by
+itself.
 
-A learned project skill ID matches:
+The validator checks the proposed skill before it becomes pending. Approval is
+still always explicit.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `/learn` | Review the current root session now |
+| `/learn-pending [id]` | List pending proposals or inspect one proposal |
+| `/learn-approve <id>` | Apply a pending proposal to the project skill tree |
+| `/learn-reject <id>` | Discard a pending proposal |
+| `/learn-promote <skill-id>` | Promote a plugin-owned project skill to the global skill directory |
+
+`/learn-pending` opens a selector when no proposal ID is provided. Selecting a
+proposal shows its staged skill and supporting details before you decide whether
+to approve it.
+
+## Project and global skills
+
+Approved skills are ordinary OpenCode directory skills:
 
 ```text
-^[a-z0-9]+(-[a-z0-9]+)*$
+<project>/.opencode/skills/<skill-id>/
 ```
 
-Plugin-owned skills carry this frontmatter metadata:
+Promoted skills are copied to the global OpenCode skill directory:
 
-```yaml
-metadata:
-  opencode-learning/owner: 'true'
+```text
+${XDG_CONFIG_HOME}/opencode/skills
 ```
 
-A valid skill tree contains a valid `SKILL.md`, real directories and regular files only, no symlinks, no file larger than 25 MiB, and no more than 100 MiB total. Reviewer-generated supporting files are limited to 1 MiB each and 10 MiB generated content total.
+or, when `XDG_CONFIG_HOME` is not set:
 
-Patch proposals represent the complete desired skill directory. Their whole-tree revision covers each sorted relative path, executable bit, and exact file bytes. Approval refuses a patch when the current project skill no longer matches its expected revision.
+```text
+${HOME}/.config/opencode/skills
+```
 
-## Approval and promotion
+Only skills owned by `opencode-learning` can be promoted with
+`/learn-promote`.
 
-Approval treats the staged `skill/` directory as authoritative, so regular files and executable bits may be edited before approval. The ownership marker must still be present. File replacements use temporary-file rename where appropriate; removed files are deleted last. The pending proposal is consumed only after project and staged post-checks confirm the intended revision.
+## Requirements
 
-Staging, rejection, approval, and promotion acquire cross-process advisory locks on the relevant skill directories using Ubuntu's `flock` utility from `util-linux`. Project operations serialize within the project skill directory; promotion also locks the global skill directory. Approval checks the expected revision while holding the lock. Locks are released when the operation ends or its owning process exits. External editors do not participate in these advisory locks.
+- OpenCode V2
+- Node.js 24 or newer
+- `flock` from `util-linux`
 
-Promotion validates the plugin-owned project source, replaces the exact global skill directory, copies the complete tree, verifies both source and destination revisions, and reloads native skills.
+## Development
 
-## Verification
-
-The repository uses Bun for package management and commits `bun.lock`. Development-only configuration and tests live under `tooling/`.
-
-Knip declares `flock` as an external system binary because it is supplied by Ubuntu's `util-linux`, rather than an npm dependency.
+Install dependencies:
 
 ```sh
 bun install --frozen-lockfile
+```
+
+Run repository checks:
+
+```sh
 bun run check
+```
+
+Apply supported fixes and rerun validation:
+
+```sh
 bun run fix
 ```
 
-`bun run check` scans compatible direct dependency updates, checks formatting, lint, types, the isolated checkout-local OpenCode activation test, dependency architecture, unused code and dependencies, vulnerabilities, and package contents without stopping at the first failure. `bun run fix` applies compatible direct dependency updates and available automatic cleanup, then reruns the complete check chain against the resulting repository state.
-
-The integration test launches and terminates its own isolated private `opencode2 serve --stdio --port 0` child process. It does not stop or restart the user's OpenCode service.
+When OpenCode is started from the repository checkout, the local `.opencode`
+wrapper loads the checkout version instead of the deployed plugin.
