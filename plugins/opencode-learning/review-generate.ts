@@ -38,7 +38,7 @@ export function isolatedGenerate(
       const models = yield* ctx.catalog.model.list()
       const messages = captured ?? (yield* ctx.session.context(sessionRef))
       let capturedModel = ''
-      const registration = yield* ctx.session.hook('context', (request) => {
+      const registration = yield* ctx.session.hook('generate', (request) => {
         if (!JSON.stringify(request.messages).includes(marker)) {
           return Effect.void
         }
@@ -56,7 +56,7 @@ export function isolatedGenerate(
         .generate({ ...sessionRef, prompt: marker })
         .pipe(Effect.ensuring(registration.dispose))
       if (capturedModel === '') {
-        return yield* Effect.fail(new Error('review context hook did not capture generation'))
+        return yield* Effect.fail(new Error('review generate hook did not capture generation'))
       }
 
       return { text: generated.text, model: capturedModel }

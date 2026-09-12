@@ -56,7 +56,7 @@ A review builds bounded evidence, selects up to five plugin-owned project skill 
   -> native skill reload
 ```
 
-The reviewer and validator use the root session's selected model. Each transient generation removes tools and ambient system context. The validator receives the proposed skill text, generated file bodies, copied-file metadata, and the evidence used for review. Copied files are checked structurally; unseen file bodies are not semantically validated. A rejected or empty review consumes the reviewed fresh batch; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
+The reviewer and validator use the root session's selected model. Each transient generation uses the native `generate` hook to remove tools and ambient system context and supply the review packet. The validator receives the proposed skill text, generated file bodies, copied-file metadata, and the evidence used for review. Copied files are checked structurally; unseen file bodies are not semantically validated. A rejected or empty review consumes the reviewed fresh batch; overlapping context may be reconsidered only when later fresh evidence materially supports a procedure.
 
 Manual `/learn` runs the same review pipeline synchronously over the current root session. It starts with the captured session evidence as fresh; repeated invocations continue any deferred batch with up to two preceding turns as context. Once that captured backlog is consumed, a manual review starts from the session's beginning.
 
