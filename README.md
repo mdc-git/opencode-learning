@@ -25,11 +25,19 @@ Add the plugin to your OpenCode configuration:
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git"
+      "package": "opencode-learning@git+https://github.com/mdc-git/opencode-learning.git",
+      "options": {
+        "reviewerModel": "provider/reviewer-model",
+        "validatorModel": "provider/validator-model"
+      }
     }
   ]
 }
 ```
+
+`reviewerModel` and `validatorModel` accept model references in
+`provider/model` format, with an optional `#variant`. When an option is omitted,
+that review call uses the root session's selected model.
 
 ## Quick start
 
@@ -94,12 +102,12 @@ still always explicit.
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `/learn` | Review the current root session now |
-| `/learn-pending [id]` | List pending proposals or inspect one proposal |
-| `/learn-approve <id>` | Apply a pending proposal to the project skill tree |
-| `/learn-reject <id>` | Discard a pending proposal |
+| Command                     | Purpose                                                            |
+| --------------------------- | ------------------------------------------------------------------ |
+| `/learn`                    | Review the current root session now                                |
+| `/learn-pending [id]`       | List pending proposals or inspect one proposal                     |
+| `/learn-approve <id>`       | Apply a pending proposal to the project skill tree                 |
+| `/learn-reject <id>`        | Discard a pending proposal                                         |
 | `/learn-promote <skill-id>` | Promote a plugin-owned project skill to the global skill directory |
 
 `/learn-pending` opens a selector when no proposal ID is provided. Selecting a

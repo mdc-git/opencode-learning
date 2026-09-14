@@ -1,6 +1,7 @@
 import { Plugin } from '@opencode/plugin/effect'
 import { Cause, Effect, Fiber, Stream } from 'effect'
 import { record } from './evidence-records.ts'
+import { parseModelReference, type ModelRef } from './review-generate.ts'
 import { runReview, type ReviewActivity, type ReviewResult } from './review.ts'
 import { registerLearningRpc } from './rpc-server.ts'
 import { createStore, PENDING_LIMIT, type Store } from './store.ts'
@@ -23,6 +24,15 @@ type Runtime = {
   store: Store
   states: Map<SessionId, SessionState>
   activity: ReviewActivity
+  reviewerModel?: ModelRef
+  validatorModel?: ModelRef
+}
+
+function reviewModels(options: Plugin.Context['options']) {
+  return {
+    reviewerModel: parseModelReference(options.reviewerModel, 'reviewerModel'),
+    validatorModel: parseModelReference(options.validatorModel, 'validatorModel')
+  }
 }
 
 function stateFor(states: Map<SessionId, SessionState>, sessionId: SessionId): SessionState {
@@ -94,6 +104,8 @@ function automaticReview(
     startAfter: state.reviewCursor,
     lookbackTurns: REVIEW_LOOKBACK_TURNS,
     messages,
+    reviewerModel: runtime.reviewerModel,
+    validatorModel: runtime.validatorModel,
     activity: runtime.activity
   }).pipe(
     Effect.flatMap((result) => finishAutomatic(state, result)),
@@ -209,6 +221,8 @@ function manualReview(
     const review = runReview(runtime.ctx, runtime.store, sessionRef, {
       startAfter: state.manualCursor,
       lookbackTurns: REVIEW_LOOKBACK_TURNS,
+      reviewerModel: runtime.reviewerModel,
+      validatorModel: runtime.validatorModel,
       activity: runtime.activity
     }).pipe(
       Effect.ensuring(
@@ -255,7 +269,8 @@ export default Plugin.define({
         ctx,
         store: createStore(ctx.location.directory),
         states: new Map(),
-        activity: () => Effect.void
+        activity: () => Effect.void,
+        ...reviewModels(ctx.options)
       }
       yield* baseline(runtime)
       const rpc = yield* registerLearningRpc(ctx, runtime.store, (sessionRef) =>

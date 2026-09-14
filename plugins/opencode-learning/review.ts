@@ -6,7 +6,7 @@ import { Effect } from 'effect'
 import { ownedCandidates, patchCandidate, type Candidate } from './candidates.ts'
 import { packetBytes, type Evidence } from './evidence.ts'
 import { isSkillId, type PendingProposal, type ProposalMetadata } from './proposal.ts'
-import { isolatedGenerate } from './review-generate.ts'
+import { isolatedGenerate, type ModelRef } from './review-generate.ts'
 import { reflectionCapture, proposalFor, validatorPacket } from './review-packet.ts'
 import { VALIDATOR } from './review-prompts.ts'
 import {
@@ -35,6 +35,8 @@ export type ReviewOptions = {
   startAfter?: string
   lookbackTurns?: number
   messages?: readonly unknown[]
+  reviewerModel?: ModelRef
+  validatorModel?: ModelRef
   activity: ReviewActivity
 }
 type FinalizeInput = {
@@ -81,7 +83,13 @@ function reflect(
     const all = yield* Effect.promise(async () => ownedCandidates(store))
     const pending = yield* Effect.promise(async () => store.listPending())
     const capture = reflectionCapture(all, pending, options)
-    const generated = yield* isolatedGenerate(ctx, sessionRef, capture.prepare, options.messages)
+    const generated = yield* isolatedGenerate({
+      ctx,
+      sessionRef,
+      prepare: capture.prepare,
+      model: options.reviewerModel,
+      captured: options.messages
+    })
     const { evidence, candidates } = capture.result()
     if (evidence.skipped > 0) {
       yield* activity(options, sessionRef, {
@@ -110,17 +118,19 @@ function validateMaterialized(input: FinalizeInput): Effect.Effect<Validation, u
       kind: 'validator-started',
       message: `validating ${input.reflection.skillId}`
     })
-    const generated = yield* isolatedGenerate(input.ctx, input.sessionRef, (_, maxBytes) => {
-      const prompt = reviewerPrompt(VALIDATOR, packet)
-      if (packetBytes(prompt) > maxBytes) {
-        throw new Error('validator request exceeds model input limit')
-      }
+    const generated = yield* isolatedGenerate({
+      ctx: input.ctx,
+      sessionRef: input.sessionRef,
+      prepare(_, maxBytes) {
+        const prompt = reviewerPrompt(VALIDATOR, packet)
+        if (packetBytes(prompt) > maxBytes) {
+          throw new Error('validator request exceeds model input limit')
+        }
 
-      return prompt
+        return prompt
+      },
+      model: input.result.options.validatorModel
     })
-    if (generated.model !== input.result.model) {
-      return yield* Effect.fail(new Error('validator model differs from reflector model'))
-    }
 
     const validation = decodeValidation(generated.text)
     yield* activity(input.result.options, input.sessionRef, {
