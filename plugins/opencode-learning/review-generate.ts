@@ -71,16 +71,16 @@ export function isolatedGenerate(
   const { ctx, sessionRef, prepare, model, captured } = input
   return Effect.scoped(
     Effect.gen(function* () {
+      const messages = captured ?? (yield* ctx.session.context(sessionRef))
       if (model !== undefined) {
         const models = yield* ctx.catalog.model.list()
-        const prompt = prepare([], modelInputLimit(models.data, model))
+        const prompt = prepare(messages, modelInputLimit(models.data, model))
         const generated = yield* ctx.generate.text({ model, prompt })
         return { text: generated.text, model: modelKey(model) }
       }
 
       const marker = `opencode-learning:${crypto.randomUUID()}`
       const models = yield* ctx.catalog.model.list()
-      const messages = captured ?? (yield* ctx.session.context(sessionRef))
       let capturedModel = ''
       const registration = yield* ctx.session.hook('generate', (request) => {
         if (!JSON.stringify(request.messages).includes(marker)) {
