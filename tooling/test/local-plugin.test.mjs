@@ -176,10 +176,6 @@ async function exercisePlugin(root, project) {
   const running = startServer(project, root)
   try {
     const base = await serverUrl(running.child)
-    await api(base, `/api/plugin/await-activation${locationQuery(project)}`, {
-      method: 'POST',
-      body: '{}'
-    })
     const current = await waitForPlugin(base, project, running.diagnostics)
     assert.equal(current.plugin.source.type, 'local')
     assert.equal(current.plugin.source.path, path.join(localPlugin, 'index.ts'))

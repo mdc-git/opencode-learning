@@ -20,7 +20,7 @@
     "plugins"
   ],
   "dependencies": {
-    "@opencode/plugin": "beta",
+    "@opencode/plugin": "latest",
     "effect": "4.0.0-rc.112",
     "yaml": "^2.9.1",
     "zod": "^4.6.2"

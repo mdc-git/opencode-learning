@@ -109,7 +109,7 @@ function nextSpecifier(current, version) {
 }
 
 function candidateSpecifier(name, baseline) {
-  return name === protectedPackage ? 'beta' : `>=${bunResolvedVersion(baseline, name)}`
+  return name === protectedPackage ? 'latest' : `>=${bunResolvedVersion(baseline, name)}`
 }
 
 function widenSection(manifest, section, baseline) {
@@ -120,7 +120,7 @@ function widenSection(manifest, section, baseline) {
 
 function resolvedSpecifier(name, current, upgrade) {
   if (name === protectedPackage) {
-    return 'beta'
+    return 'latest'
   }
 
   return nextSpecifier(current, npmResolvedVersion(upgrade, name))
