@@ -1,4 +1,4 @@
-import plugin from '../plugins/opencode-learning/tui.ts'
+import plugin from '../plugins/learning/tui.ts'
 
 export default {
   ...plugin,

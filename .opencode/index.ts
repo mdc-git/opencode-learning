@@ -1,4 +1,4 @@
-import plugin from '../plugins/opencode-learning/index.ts'
+import plugin from '../plugins/learning/index.ts'
 
 export default {
   ...plugin,

@@ -70,7 +70,7 @@ const methodErrors = { failure: failureSchema }
 export type LearningActivity = z.infer<typeof activitySchema>
 
 export const learningRpc = Rpc.define({
-  id: 'github.learning_skills',
+  id: 'mdc-git.learning',
   methods: {
     review: { input: sessionInput, output: reviewResultSchema, errors: methodErrors },
     pending: { input: sessionInput, output: z.array(pendingProposalSchema), errors: methodErrors },

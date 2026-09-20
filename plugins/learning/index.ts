@@ -262,7 +262,7 @@ function shutdown(states: Map<SessionId, SessionState>) {
 }
 
 export default Plugin.define({
-  id: 'github.learning_skills',
+  id: 'mdc-git.learning',
   effect: (ctx) =>
     Effect.gen(function* () {
       const runtime: Runtime = {

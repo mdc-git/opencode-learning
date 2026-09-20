@@ -31,10 +31,10 @@ export default defineConfig([
         typescript: { project: 'tooling/tsconfig.json' }
       },
       'boundaries/files': [
-        { pattern: 'plugins/opencode-learning/index.ts', category: 'entry' },
+        { pattern: 'plugins/learning/index.ts', category: 'entry' },
         {
           pattern:
-            'plugins/opencode-learning/{candidates,directory-lock,evidence,evidence-records,proposal,review,review-generate,review-packet,review-prompts,review-schema,rpc,rpc-server,skill-files,skill-markdown,skill-tree,store,tui}.ts',
+            'plugins/learning/{candidates,directory-lock,evidence,evidence-records,proposal,review,review-generate,review-packet,review-prompts,review-schema,rpc,rpc-server,skill-files,skill-markdown,skill-tree,store,tui}.ts',
           category: 'core'
         }
       ]

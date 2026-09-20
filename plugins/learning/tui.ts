@@ -244,7 +244,7 @@ function learningCommands(context: Context, rpc: LearningClient) {
 }
 
 export default Plugin.define({
-  id: 'github.learning_skills.tui',
+  id: 'mdc-git.learning.tui',
   setup(context) {
     const location = context.location ?? context.data.location.default()
     const rpc = createLearningClient(context)
