@@ -123,7 +123,7 @@ async function snapshot(base, project) {
     api(base, `/api/command${locationQuery(project)}`)
   ])
   return {
-    plugin: plugins.data.find((item) => item.id === 'local.learning_skills'),
+    plugin: plugins.data.find((item) => item.id === 'local.learning'),
     learningCommands: commands.data
       .map((item) => item.name)
       .filter((name) => name.startsWith('learn'))
@@ -190,7 +190,7 @@ test('checkout-local server plugin activates from .opencode', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'opencode-learning-'))
   const project = path.join(root, 'project')
   try {
-    assert.equal(await exercisePlugin(root, project), 'local.learning_skills')
+    assert.equal(await exercisePlugin(root, project), 'local.learning')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
