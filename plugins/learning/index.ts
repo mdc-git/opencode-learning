@@ -261,7 +261,7 @@ function shutdown(states: Map<SessionId, SessionState>) {
   )
 }
 
-export default Plugin.define({
+const learningPlugin = Plugin.define({
   id: 'mdc-git.learning',
   effect: (ctx) =>
     Effect.gen(function* () {
@@ -284,11 +284,9 @@ export default Plugin.define({
             return primarySuccess(runtime, event.data)
           }
 
-          if (event.type === 'session.deleted') {
-            return deleteSession(runtime, event.data.sessionID)
-          }
-
-          return Effect.void
+          return event.type === 'session.deleted'
+            ? deleteSession(runtime, event.data.sessionID)
+            : Effect.void
         }),
         Effect.forkScoped
       )
@@ -296,3 +294,5 @@ export default Plugin.define({
       yield* Effect.addFinalizer(() => shutdown(runtime.states))
     })
 })
+
+export default learningPlugin

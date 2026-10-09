@@ -29,7 +29,14 @@ function indexAfterCursor(messages: readonly unknown[], cursor?: string): number
 }
 
 function userIndexes(messages: readonly unknown[]): number[] {
-  return messages.flatMap((message, index) => (record(message)?.type === 'user' ? [index] : []))
+  const indexes: number[] = []
+  for (const [index, message] of messages.entries()) {
+    if (record(message)?.type === 'user') {
+      indexes.push(index)
+    }
+  }
+
+  return indexes
 }
 
 function turns(messages: readonly unknown[]): Turn[] {
@@ -188,9 +195,7 @@ export function boundPacket(
   const previous = messages.slice(0, fresh)
   const start = contextStart(previous, options.lookbackTurns)
   const batch = freshBatch(messages.slice(fresh), skills, maxBytes)
-  if (batch.messages.length === 0) {
-    return { evidence: batch.evidence, candidates: [] }
-  }
-
-  return fitContext(messages.slice(start, fresh), batch, skills, maxBytes)
+  return batch.messages.length === 0
+    ? { evidence: batch.evidence, candidates: [] }
+    : fitContext(messages.slice(start, fresh), batch, skills, maxBytes)
 }
