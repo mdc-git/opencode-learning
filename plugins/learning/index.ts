@@ -284,11 +284,7 @@ export default Plugin.define({
             return primarySuccess(runtime, event.data)
           }
 
-          if (event.type === 'session.deleted') {
-            return deleteSession(runtime, event.data.sessionID)
-          }
-
-          return Effect.void
+          return event.type === 'session.deleted' ? deleteSession(runtime, event.data.sessionID) : Effect.void;
         }),
         Effect.forkScoped
       )

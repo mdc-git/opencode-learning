@@ -188,9 +188,5 @@ export function boundPacket(
   const previous = messages.slice(0, fresh)
   const start = contextStart(previous, options.lookbackTurns)
   const batch = freshBatch(messages.slice(fresh), skills, maxBytes)
-  if (batch.messages.length === 0) {
-    return { evidence: batch.evidence, candidates: [] }
-  }
-
-  return fitContext(messages.slice(start, fresh), batch, skills, maxBytes)
+  return batch.messages.length === 0 ? { evidence: batch.evidence, candidates: [] } : fitContext(messages.slice(start, fresh), batch, skills, maxBytes);
 }

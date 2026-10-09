@@ -99,11 +99,7 @@ export function isolatedGenerate(
       const generated = yield* ctx.session
         .generate({ ...sessionRef, prompt: marker })
         .pipe(Effect.ensuring(registration.dispose))
-      if (capturedModel === '') {
-        return yield* Effect.fail(new Error('review generate hook did not capture generation'))
-      }
-
-      return { text: generated.text, model: capturedModel }
+      return capturedModel === '' ? (yield* Effect.fail(new Error('review generate hook did not capture generation'))) : { text: generated.text, model: capturedModel };
     })
   )
 }
