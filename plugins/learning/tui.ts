@@ -243,7 +243,7 @@ function learningCommands(context: Context, rpc: LearningClient) {
   ]
 }
 
-export default Plugin.define({
+const learningTuiPlugin = Plugin.define({
   id: 'mdc-git.learning.tui',
   setup(context) {
     const location = context.location ?? context.data.location.default()
@@ -270,3 +270,5 @@ export default Plugin.define({
     }
   }
 })
+
+export default learningTuiPlugin
