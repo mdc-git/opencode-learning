@@ -116,20 +116,23 @@ function userPaths(message: Record<string, unknown>, paths: Set<string>): void {
 
 function toolPaths(part: unknown, paths: Set<string>): void {
   const item = record(part) ?? {}
-  if (item.type === 'tool') {
-    const state = record(item.state) ?? {}
-    collectPaths(state.input, paths)
-    collectPaths(state.metadata, paths)
+  if (item.type !== 'tool') {
+    return
   }
+
+  const state = record(item.state) ?? {}
+  collectPaths(state.input, paths)
+  collectPaths(state.metadata, paths)
 }
 
 export function compactMessages(messages: readonly unknown[]) {
   const paths = new Set<string>()
-  const records = messages.flatMap((value) => {
+  const records: Array<Record<string, unknown>> = []
+  for (const value of messages) {
     const message = record(value) ?? {}
     const compact = COMPACTERS[String(message.type)]
     if (compact === undefined) {
-      return []
+      continue
     }
 
     userPaths(message, paths)
@@ -137,7 +140,8 @@ export function compactMessages(messages: readonly unknown[]) {
       toolPaths(part, paths)
     }
 
-    return [{ type: message.type, messageId: message.id, ...compact(message) }]
-  })
+    records.push({ type: message.type, messageId: message.id, ...compact(message) })
+  }
+
   return { records, authorizedPaths: [...paths].toSorted() }
 }
