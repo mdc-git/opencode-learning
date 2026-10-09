@@ -29,12 +29,14 @@ function indexAfterCursor(messages: readonly unknown[], cursor?: string): number
 }
 
 function userIndexes(messages: readonly unknown[]): number[] {
-  return messages.reduce<number[]>((indexes, message, index) => {
+  const indexes: number[] = []
+  for (const [index, message] of messages.entries()) {
     if (record(message)?.type === 'user') {
       indexes.push(index)
     }
-    return indexes
-  }, [])
+  }
+
+  return indexes
 }
 
 function turns(messages: readonly unknown[]): Turn[] {
