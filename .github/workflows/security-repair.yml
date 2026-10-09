@@ -25,6 +25,8 @@ jobs:
           bun audit fix || true
           bun install
           bun audit
+      - name: Install OpenCode V2
+        run: bun add --global --trust @opencode/cli@latest
       - name: Verify repository
         run: bun run check
       - name: Commit repaired dependency graph
