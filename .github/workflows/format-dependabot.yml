@@ -1,0 +1,31 @@
+name: Format Dependabot YAML
+
+on:
+  push:
+    branches:
+      - repair/xo5-learning
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/xo5-learning
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Format Dependabot config
+        run: bun run prettier .github/dependabot.yml --write --config tooling/prettier.json
+      - name: Commit formatting and remove helper
+        run: |
+          git rm .github/workflows/format-dependabot.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(format): normalize Dependabot config" -m "Apply the repository's configured Prettier rules to the current Dependabot compatibility policy and remove the temporary helper workflow."
+          git push
