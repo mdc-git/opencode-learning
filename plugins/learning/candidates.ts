@@ -65,11 +65,9 @@ function compareScore(left: CandidateScore, right: CandidateScore): number {
     return left.explicit ? -1 : 1
   }
 
-  if (left.overlap !== right.overlap) {
-    return right.overlap - left.overlap
-  }
-
-  return left.candidate.id.localeCompare(right.candidate.id)
+  return left.overlap === right.overlap
+    ? left.candidate.id.localeCompare(right.candidate.id)
+    : right.overlap - left.overlap
 }
 
 export function selectCandidates(all: Candidate[], evidence: { records: unknown[] }): Candidate[] {
