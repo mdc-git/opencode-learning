@@ -23,9 +23,12 @@ type MaterializeOptions = {
 }
 
 function isInvalidDestination(relative: string): boolean {
-  return relative === 'SKILL.md' || path.isAbsolute(relative) || relative.includes('\\')
-    ? true
-    : relative.split('/').some((part) => ['', '.', '..'].includes(part))
+  return (
+    relative === 'SKILL.md' ||
+    path.isAbsolute(relative) ||
+    relative.includes('\\') ||
+    relative.split('/').some((part) => ['', '.', '..'].includes(part))
+  )
 }
 
 function generatedSizes(skill: ProposedSkillFiles): number[] {
