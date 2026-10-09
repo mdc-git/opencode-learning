@@ -27,7 +27,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.5.1",
-    "dependency-cruiser": "^18.2.0",
+    "dependency-cruiser": "^18.5.0",
     "eslint": "^10.10.0",
     "eslint-config-xo": "^2.0.0",
     "eslint-plugin-boundaries": "^7.2.0",
