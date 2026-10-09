@@ -1,0 +1,33 @@
+name: Finish XO 5 fixes
+
+on:
+  push:
+    branches:
+      - repair/xo5-learning
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/xo5-learning
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Apply repository fixers
+        run: |
+          bun run prettier . --write --config tooling/prettier.json --ignore-path tooling/prettierignore
+          bun run eslint . --config tooling/eslint.config.js --fix || true
+      - name: Commit fixes and remove helper
+        run: |
+          git rm .github/workflows/finish-xo5.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(lint): finish XO 5 mechanical cleanup" -m "Apply the repository's configured Prettier and ESLint fixes on the clean XO 5 branch and remove the temporary helper workflow."
+          git push
