@@ -1,43 +1,23 @@
 {
-  "name": "opencode-learning",
-  "version": "0.0.0",
-  "private": true,
-  "repository": "github:mdc-git/opencode-learning",
-  "type": "module",
-  "exports": {
-    ".": "./plugins/learning/index.ts",
-    "./tui": "./plugins/learning/tui.ts"
-  },
-  "sideEffects": false,
+  "name": "braces",
+  "description": "Security-backported build of braces 3.0.3 with bounded nesting depth",
+  "version": "3.0.4-security.0",
+  "license": "MIT",
+  "repository": "https://github.com/mdc-git/opencode-learning",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "lib",
+    "LICENSE",
+    "SECURITY_BACKPORT.md"
+  ],
   "engines": {
-    "node": ">=24"
+    "node": ">=18"
   },
   "scripts": {
-    "check": "failed=0; node tooling/update-direct-deps.mjs || failed=1; prettier . --check --config tooling/prettier.json --ignore-path tooling/prettierignore || failed=1; eslint . --config tooling/eslint.config.js || failed=1; tsc --project tooling/tsconfig.json --noEmit || failed=1; node --test tooling/test/local-plugin.test.mjs || failed=1; depcruise --config tooling/dependency-cruiser.mjs plugins/learning || failed=1; knip --config tooling/knip.json --tsConfig tooling/tsconfig.json || failed=1; bun audit || failed=1; bun pm pack --dry-run || failed=1; exit \"$failed\"",
-    "fix": "failed=0; node tooling/update-direct-deps.mjs --apply || failed=1; bun install || failed=1; bun audit fix || failed=1; knip --config tooling/knip.json --tsConfig tooling/tsconfig.json --fix || failed=1; prettier . --write --config tooling/prettier.json --ignore-path tooling/prettierignore || failed=1; eslint . --config tooling/eslint.config.js --fix || failed=1; bun install || failed=1; bun run check || failed=1; exit \"$failed\""
+    "test": "node --test test/security.test.js"
   },
-  "files": [
-    "plugins"
-  ],
   "dependencies": {
-    "@opencode/plugin": "latest",
-    "effect": "4.0.0-rc.112",
-    "yaml": "^2.9.1",
-    "zod": "^4.6.2"
-  },
-  "devDependencies": {
-    "@types/node": "^26.5.1",
-    "dependency-cruiser": "^18.2.0",
-    "eslint": "^10.10.0",
-    "eslint-config-xo": "^2.0.0",
-    "eslint-plugin-boundaries": "^7.2.0",
-    "eslint-plugin-sonarjs": "^4.2.0",
-    "globals": "^17.12.0",
-    "knip": "^6.35.1",
-    "prettier": "^3.9.6",
-    "typescript": "^6.0.3"
-  },
-  "overrides": {
-    "@opentelemetry/core": "2.8.0"
+    "fill-range": "^7.1.1"
   }
 }
