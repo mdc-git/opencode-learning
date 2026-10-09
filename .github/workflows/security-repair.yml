@@ -1,0 +1,36 @@
+name: Security dependency repair
+
+on:
+  push:
+    branches:
+      - fix/security-audit-20261009-learning
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Repair vulnerable dependencies
+        run: |
+          bun install --frozen-lockfile
+          bun audit fix
+          bun install
+      - name: Verify repository
+        run: bun run check
+      - name: Commit repaired dependency graph
+        run: |
+          rm .github/workflows/security-repair.yml
+          git config user.name "mdc-git"
+          git config user.email "65224188+mdc-git@users.noreply.github.com"
+          git add package.json bun.lock .github/workflows/security-repair.yml
+          git commit -m "fix(security): repair vulnerable dependency graph" -m "Apply Bun audit fixes that satisfy the repository security gate while preserving existing formatting, lint, typecheck, tests, architecture, package, and dependency validation. Regenerate the dependency graph from declared ranges and remove the temporary repair workflow before pushing."
+          git push origin HEAD:fix/security-audit-20261009-learning
