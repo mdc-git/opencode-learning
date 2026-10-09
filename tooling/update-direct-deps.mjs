@@ -101,11 +101,7 @@ function nextSpecifier(current, version) {
     return `^${version}`
   }
 
-  if (current.startsWith('~')) {
-    return `~${version}`
-  }
-
-  return version
+  return current.startsWith('~') ? `~${version}` : version
 }
 
 function candidateSpecifier(name, baseline) {
@@ -119,11 +115,9 @@ function widenSection(manifest, section, baseline) {
 }
 
 function resolvedSpecifier(name, current, upgrade) {
-  if (name === protectedPackage) {
-    return 'latest'
-  }
-
-  return nextSpecifier(current, npmResolvedVersion(upgrade, name))
+  return name === protectedPackage
+    ? 'latest'
+    : nextSpecifier(current, npmResolvedVersion(upgrade, name))
 }
 
 function dependencyChange(section, name, current, upgrade) {
