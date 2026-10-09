@@ -26,8 +26,8 @@ async function fetchApi(base, requestPath, options) {
   }
 }
 
-async function api(base, requestPath, options = {}) {
-  const response = await fetchApi(base, requestPath, options)
+async function api(base, requestPath) {
+  const response = await fetchApi(base, requestPath, {})
   if (!response.ok) {
     throw new Error(`${response.status}: ${await response.text()}`)
   }
@@ -133,14 +133,14 @@ async function snapshot(base, project) {
 function waitForPlugin(base, project, diagnostics) {
   return new Promise((resolve, reject) => {
     let lastSnapshot = { learningCommands: [] }
-    const finish = (timer, interval, result) => {
+    const finish = (result) => {
       clearTimeout(timer)
       clearInterval(interval)
       result()
     }
 
     const timer = setTimeout(() => {
-      finish(timer, interval, () =>
+      finish(() =>
         reject(
           new Error(
             `local learning plugin did not activate\nstate=${JSON.stringify(lastSnapshot, null, 2)}\nstderr=${diagnostics()}`
@@ -153,11 +153,11 @@ function waitForPlugin(base, project, diagnostics) {
         .then((current) => {
           lastSnapshot = current
           if (current.plugin?.state?.status === 'active') {
-            finish(timer, interval, () => resolve(current))
+            finish(() => resolve(current))
           }
         })
         .catch((error) => {
-          finish(timer, interval, () => reject(error))
+          finish(() => reject(error))
         })
     }
 
