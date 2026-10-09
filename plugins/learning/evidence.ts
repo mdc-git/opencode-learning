@@ -29,7 +29,12 @@ function indexAfterCursor(messages: readonly unknown[], cursor?: string): number
 }
 
 function userIndexes(messages: readonly unknown[]): number[] {
-  return messages.flatMap((message, index) => (record(message)?.type === 'user' ? [index] : []))
+  return messages.reduce<number[]>((indexes, message, index) => {
+    if (record(message)?.type === 'user') {
+      indexes.push(index)
+    }
+    return indexes
+  }, [])
 }
 
 function turns(messages: readonly unknown[]): Turn[] {
