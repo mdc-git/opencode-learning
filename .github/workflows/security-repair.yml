@@ -21,9 +21,10 @@ jobs:
           bun-version: 1.4.2
       - name: Repair vulnerable dependencies
         run: |
-          bun install --frozen-lockfile
-          bun audit fix
           bun install
+          bun audit fix || true
+          bun install
+          bun audit
       - name: Verify repository
         run: bun run check
       - name: Commit repaired dependency graph
