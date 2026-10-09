@@ -261,7 +261,7 @@ function shutdown(states: Map<SessionId, SessionState>) {
   )
 }
 
-export default Plugin.define({
+const learningPlugin = Plugin.define({
   id: 'mdc-git.learning',
   effect: (ctx) =>
     Effect.gen(function* () {
@@ -294,3 +294,5 @@ export default Plugin.define({
       yield* Effect.addFinalizer(() => shutdown(runtime.states))
     })
 })
+
+export default learningPlugin
