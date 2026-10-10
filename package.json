@@ -33,7 +33,7 @@
     "eslint-plugin-boundaries": "^7.2.0",
     "eslint-plugin-sonarjs": "^4.2.2",
     "globals": "^17.13.0",
-    "knip": "^6.35.1",
+    "knip": "^6.40.0",
     "prettier": "^3.9.9",
     "typescript": "^6.0.3"
   },
